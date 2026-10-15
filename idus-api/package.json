@@ -1,0 +1,37 @@
+{
+  "name": "idus-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@clerk/express": "^1.7.6",
+    "@google/generative-ai": "^0.24.1",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.11.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.10.2",
+    "nanoid": "^6.0.1",
+    "socket.io": "^4.8.4",
+    "ulid": "^3.0.2",
+    "zod": "^4.6.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}

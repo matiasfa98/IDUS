@@ -1,0 +1,5800 @@
+IDUS PROJECT CODEBASE
+Generated: 2026-10-02T14:33:46.345Z
+Root: C:\Users\PC\Desktop\Idus\idus-api
+
+========================================
+
+
+========================================
+FILE: package.json
+========================================
+
+{
+  "name": "idus-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@clerk/express": "^1.7.6",
+    "@google/generative-ai": "^0.24.1",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.11.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.10.2",
+    "nanoid": "^6.0.1",
+    "socket.io": "^4.8.4",
+    "ulid": "^3.0.2",
+    "zod": "^4.6.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}
+
+
+
+
+========================================
+FILE: scripts\migrateMetaphors.js
+========================================
+
+// src/scripts/migrateMetaphors.js
+//
+// Migrates User.metaphor from the old flat shape
+//   { key, label, animeTheme, customArtUrl }
+// to the new two-layer shape
+//   { genre, archetype, vibe, displayName, tagline, art }
+//
+// Run: node src/scripts/migrateMetaphors.js
+// Idempotent. Backs off if `metaphor.genre` is already set.
+
+import mongoose from "mongoose";
+import { config } from "../src/config.js";
+import { User } from "../src/models/User.js";
+import { DEFAULT_METAPHOR } from "../src/data/metaphors.js";
+
+async function main() {
+  await mongoose.connect(config.mongoUri);
+  console.log("[migrate] connected");
+
+  const cursor = User.find({
+    $or: [
+      { "metaphor.genre": { $exists: false } },
+      { "metaphor.genre": null },
+    ],
+  }).cursor();
+
+  let count = 0;
+  for await (const user of cursor) {
+    const old = user.metaphor ?? {};
+    user.metaphor = {
+      genre: DEFAULT_METAPHOR.genre,
+      archetype: DEFAULT_METAPHOR.archetype,
+      vibe: DEFAULT_METAPHOR.vibe,
+      displayName: old.label ?? null,
+      tagline: old.animeTheme ?? null,
+      art: old.customArtUrl
+        ? {
+            source: "upload",
+            url: old.customArtUrl,
+            thumbUrl: null,
+            attribution: null,
+            externalId: null,
+          }
+        : null,
+      updatedAt: new Date(),
+    };
+    await user.save();
+    count++;
+  }
+
+  console.log(`[migrate] done — ${count} user(s) updated`);
+  await mongoose.disconnect();
+}
+
+main().catch((err) => {
+  console.error("[migrate] failed", err);
+  process.exit(1);
+});
+
+
+
+========================================
+FILE: src\config.js
+========================================
+
+import dotenv from "dotenv";
+dotenv.config();
+
+function required(key) {
+  const v = process.env[key];
+  if (!v) throw new Error(`Missing env var: ${key}`);
+  return v;
+}
+
+export const config = {
+  env: process.env.NODE_ENV ?? "development",
+  port: Number(process.env.PORT ?? 4000),
+  apiUrl: process.env.API_URL ?? "http://localhost:4000",
+  webUrl: process.env.WEB_URL ?? "http://localhost:3000",
+
+  mongoUri: required("MONGODB_URI"),
+
+  jwt: {
+    accessSecret: required("JWT_ACCESS_SECRET"),
+    refreshSecret: required("JWT_REFRESH_SECRET"),
+    accessTtl: process.env.JWT_ACCESS_TTL ?? "15m",
+    refreshTtl: process.env.JWT_REFRESH_TTL ?? "30d",
+  },
+
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY ?? "",
+    model: process.env.GEMINI_MODEL ?? "gemini-3.5-flash-lite",
+  },
+
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME ?? "",
+    apiKey: process.env.CLOUDINARY_API_KEY ?? "",
+    apiSecret: process.env.CLOUDINARY_API_SECRET ?? "",
+  },
+
+  cookie: {
+    domain: process.env.COOKIE_DOMAIN ?? "localhost",
+    secure: process.env.COOKIE_SECURE === "true",
+  },
+  clerk: {
+  publishableKey: required("CLERK_PUBLISHABLE_KEY"),
+  secretKey: required("CLERK_SECRET_KEY"),
+  webhookSecret: required("CLERK_WEBHOOK_SIGNING_SECRET"),
+},
+};
+
+
+
+========================================
+FILE: src\data\metaphors.js
+========================================
+
+// src/data/metaphors.js
+//
+// Static catalog for user metaphors. Curated, versioned with the codebase.
+// When this needs to be editable without a deploy, lift it into a Mongo
+// collection with the same shape and swap the import. Don't do that yet.
+
+export const GENRES = [
+  "shonen",
+  "seinen",
+  "shojo",
+  "josei",
+  "isekai",
+  "mecha",
+  "slice-of-life",
+  "psychological",
+  "sports",
+  "supernatural",
+  "historical",
+  "cyberpunk",
+  "fantasy",
+  "sci-fi",
+  "mystery",
+  "horror",
+];
+
+export const ARCHETYPES = [
+  "ronin",
+  "alchemist",
+  "shinobi",
+  "strategist",
+  "berserker",
+  "healer",
+  "mentor",
+  "rival",
+  "prodigy",
+  "wanderer",
+  "trickster",
+  "guardian",
+  "scholar",
+  "artisan",
+  "hunter",
+  "monarch",
+];
+
+export const VIBES = [
+  "stoic",
+  "chaotic",
+  "wholesome",
+  "melancholic",
+  "heroic",
+  "trickster",
+  "determined",
+  "curious",
+  "serene",
+  "fierce",
+];
+
+// Optional: guided onboarding — pick a genre, suggest archetypes.
+// Not enforced server-side; just a hint the frontend can use.
+export const ARCHETYPES_BY_GENRE = {
+  shonen: ["prodigy", "rival", "berserker", "guardian"],
+  seinen: ["ronin", "strategist", "scholar", "hunter"],
+  shojo: ["healer", "artisan", "scholar", "guardian"],
+  josei: ["strategist", "artisan", "mentor", "healer"],
+  isekai: ["wanderer", "alchemist", "trickster", "monarch"],
+  mecha: ["prodigy", "strategist", "guardian", "berserker"],
+  "slice-of-life": ["artisan", "healer", "mentor", "wanderer"],
+  psychological: ["strategist", "trickster", "scholar", "rival"],
+  sports: ["prodigy", "rival", "mentor", "determined"],
+  supernatural: ["shinobi", "monarch", "hunter", "alchemist"],
+  historical: ["ronin", "strategist", "artisan", "mentor"],
+  cyberpunk: ["hacker", "trickster", "hunter", "monarch"],
+  fantasy: ["alchemist", "guardian", "wanderer", "monarch"],
+  "sci-fi": ["strategist", "scholar", "prodigy", "guardian"],
+  mystery: ["scholar", "strategist", "hunter", "trickster"],
+  horror: ["hunter", "monarch", "trickster", "ronin"],
+};
+
+// Defaults applied when a user hasn't picked anything yet.
+// Chosen to be neutral and non-presumptuous.
+export const DEFAULT_METAPHOR = {
+  genre: "slice-of-life",
+  archetype: "wanderer",
+  vibe: "curious",
+  displayName: null,
+  tagline: null,
+  art: null,
+};
+
+export const METAPHOR_LIMITS = {
+  displayNameMax: 40,
+  taglineMax: 120,
+  attributionMax: 200,
+};
+
+export function isValidGenre(g) {
+  return GENRES.includes(g);
+}
+export function isValidArchetype(a) {
+  return ARCHETYPES.includes(a);
+}
+export function isValidVibe(v) {
+  return VIBES.includes(v);
+}
+
+
+
+========================================
+FILE: src\db\mongo.js
+========================================
+
+import mongoose from "mongoose";
+import { config } from "../config.js";
+
+let connected = false;
+
+export async function connectMongo() {
+  if (connected) return;
+  mongoose.set("strictQuery", true);
+
+  await mongoose.connect(config.mongoUri, {
+    autoIndex: config.env !== "production",
+    serverSelectionTimeoutMS: 10_000,
+  });
+
+  connected = true;
+  console.log("[mongo] connected to Atlas");
+}
+
+export async function disconnectMongo() {
+  await mongoose.disconnect();
+  connected = false;
+}
+
+
+
+========================================
+FILE: src\middleware\auth.js
+========================================
+
+import { getAuth } from "@clerk/express";
+import { User } from "../models/User.js";
+import { generatePermanentId } from "../utils/permanentId.js";
+
+export async function requireAuth(req, res, next) {
+  try {
+    const auth = getAuth(req);
+    console.log("[auth] getAuth:", JSON.stringify(auth));
+    console.log("[auth] header starts:", req.headers.authorization?.slice(0, 30));
+
+    const { userId } = auth;
+
+    if (!userId) {
+      return res.status(401).json({ error: "UNAUTHENTICATED" });
+    }
+
+    let user = await User.findOne({ clerkId: userId });
+    if (!user) {
+      user = await User.create({
+        clerkId: userId,
+        permanentId: await generatePermanentId(),
+      });
+    }
+
+    req.userId = String(user._id);
+    req.clerkId = userId;
+    next();
+  } catch (err) {
+    console.error("[auth] error:", err);
+    next(err);
+  }
+}
+
+
+
+========================================
+FILE: src\middleware\clerk.js
+========================================
+
+// src/middleware/clerk.js
+import { clerkMiddleware } from "@clerk/express";
+import { config } from "../config.js";
+
+export const idusClerk = clerkMiddleware({
+  publishableKey: config.clerk.publishableKey,
+  secretKey: config.clerk.secretKey,
+  authorizedParties: [
+    "https://ultimate-fish-8975.accounts.dev",
+    "http://localhost:4000", // In case you test from a local frontend later
+  ],
+  // Keep debug on for now to see the exact error
+  debug: true,
+});
+
+
+
+========================================
+FILE: src\middleware\errorHandler.js
+========================================
+
+export function notFoundHandler(req, res) {
+  res.status(404).json({ error: "NOT_FOUND", path: req.path });
+}
+
+export function errorHandler(err, _req, res, _next) {
+  const status = err.status ?? 500;
+
+  if (status >= 500) {
+    console.error("[error]", err);
+  }
+
+  res.status(status).json({
+    error: err.code ?? "INTERNAL_ERROR",
+    message: err.message ?? "Something went wrong",
+  });
+}
+
+
+
+========================================
+FILE: src\middleware\rateLimit.js
+========================================
+
+// src/middleware/rateLimit.js
+//
+// Sliding-window rate limiter. In-memory only — single process.
+// For multi-instance scale, swap the Map for Redis (INCR + EXPIRE).
+
+const buckets = new Map(); // key -> array of timestamps (ms), ascending
+
+// Periodic cleanup to avoid unbounded growth.
+const CLEANUP_INTERVAL_MS = 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of buckets.entries()) {
+    const pruned = timestamps.filter((t) => now - t < 60 * 60 * 1000);
+    if (pruned.length === 0) buckets.delete(key);
+    else buckets.set(key, pruned);
+  }
+}, CLEANUP_INTERVAL_MS).unref();
+
+/**
+ * Create a rate-limit middleware.
+ *
+ * @param {object} opts
+ * @param {number} opts.windowMs - window duration in ms
+ * @param {number} opts.max - max requests per window
+ * @param {string} opts.name - identifier for error messages + key namespacing
+ * @param {(req: import("express").Request) => string} [opts.keyFn]
+ * @returns {import("express").RequestHandler}
+ */
+export function rateLimit({ windowMs, max, name, keyFn }) {
+  return (req, res, next) => {
+    const key = `${name}:${keyFn ? keyFn(req) : defaultKey(req)}`;
+    const now = Date.now();
+    const windowStart = now - windowMs;
+
+    // Prune expired timestamps for this key.
+    let timestamps = (buckets.get(key) ?? []).filter((t) => t > windowStart);
+
+    const wouldExceed = timestamps.length >= max;
+
+    if (wouldExceed) {
+      // Compute when the user can retry.
+      // We have N = timestamps.length requests in the window.
+      // We need to get down to max requests.
+      // The oldest (N - max + 1) timestamps must expire before we accept.
+      // The one that matters is timestamps[N - max] (0-indexed).
+      const indexToExpire = timestamps.length - max;
+      const pivot = timestamps[indexToExpire] ?? timestamps[0] ?? now;
+      const retryAt = pivot + windowMs;
+      const retryAfterSec = Math.max(1, Math.ceil((retryAt - now) / 1000));
+
+      // Do NOT push the current request into the bucket —
+      // rejected requests shouldn't count toward the next window.
+      buckets.set(key, timestamps);
+
+      res.setHeader("X-RateLimit-Limit", String(max));
+      res.setHeader("X-RateLimit-Remaining", "0");
+      res.setHeader("X-RateLimit-Reset", String(Math.ceil(retryAt / 1000)));
+      res.setHeader("Retry-After", String(retryAfterSec));
+
+      return res.status(429).json({
+        error: "RATE_LIMITED",
+        message: `Too many requests. Try again in ${retryAfterSec}s.`,
+        retryAfter: retryAfterSec,
+      });
+    }
+
+    // Accept: push and continue.
+    timestamps.push(now);
+    buckets.set(key, timestamps);
+
+    const remaining = Math.max(0, max - timestamps.length);
+    // Reset time = when the oldest accepted request leaves the window.
+    const oldest = timestamps[0] ?? now;
+    const resetAt = oldest + windowMs;
+
+    res.setHeader("X-RateLimit-Limit", String(max));
+    res.setHeader("X-RateLimit-Remaining", String(remaining));
+    res.setHeader("X-RateLimit-Reset", String(Math.ceil(resetAt / 1000)));
+
+    next();
+  };
+}
+
+function defaultKey(req) {
+  if (req.userId) return `u:${req.userId}`;
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    return `ip:${forwarded.split(",")[0].trim()}`;
+  }
+  return `ip:${req.ip}`;
+}
+
+// ── Prebuilt limiters ────────────────────────────────
+
+export const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  name: "search",
+});
+
+export const uploadSignLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  name: "upload-sign",
+});
+
+export const messageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  name: "messages",
+});
+
+export const contactRequestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  name: "contact-requests",
+});
+
+export const devTokenLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  name: "dev-token",
+  keyFn: (req) =>
+    `ip:${(req.headers["x-forwarded-for"] ?? req.ip ?? "unknown")
+      .toString()
+      .split(",")[0]
+      .trim()}`,
+});
+
+export const syncLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  name: "sync",
+});
+
+export const generateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  name: "generate",
+});
+
+
+
+========================================
+FILE: src\middleware\validate.js
+========================================
+
+export function validate(schema, source = "body") {
+  return (req, res, next) => {
+    const result = schema.safeParse(req[source]);
+
+    if (!result.success) {
+      return res.status(400).json({
+        error: "VALIDATION_ERROR",
+        details: result.error.flatten(),
+      });
+    }
+
+    req[source] = result.data;
+    next();
+  };
+}
+
+
+
+========================================
+FILE: src\models\Challenge.js
+========================================
+
+import mongoose from "mongoose";
+
+const DIFFICULTIES = ["BEGINNER", "ELEMENTARY", "INTERMEDIATE", "ADVANCED", "EXPERT"];
+const DAY_TYPES = ["PROJECT", "MILESTONE", "FINAL"];
+const SKILL_MODES = ["SHARED", "INDIVIDUAL"];
+const VISIBILITIES = ["PRIVATE", "UNLISTED", "PUBLIC"];
+const STATUSES = ["DRAFT", "PUBLISHED", "ARCHIVED"];
+
+const daySchema = new mongoose.Schema(
+  {
+    dayNumber: { type: Number, required: true },
+    scheduledDate: { type: Date, required: true },
+    title: { type: String, required: true },
+    type: { type: String, enum: DAY_TYPES, default: "PROJECT" },
+    description: { type: String, required: true },
+    objective: { type: String, required: true },
+    requirements: { type: [String], default: [] },
+    estimatedMinutes: { type: Number, default: 60 },
+    isFinal: { type: Boolean, default: false },
+  },
+  { _id: true }
+);
+
+const phaseSchema = new mongoose.Schema(
+  {
+    order: { type: Number, required: true },
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    monthLabel: String,
+    days: { type: [daySchema], default: [] },
+  },
+  { _id: true }
+);
+
+const scheduleSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ["weekdays", "custom", "explicit"], required: true },
+    days: [Number],
+    dates: [String],
+  },
+  { _id: false }
+);
+
+const settingsSchema = new mongoose.Schema(
+  {
+    graceHours: { type: Number, default: 48 },
+    allowBackfill: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
+const challengeSchema = new mongoose.Schema(
+  {
+    slug: { type: String, required: true, unique: true, index: true },
+    inviteCode: { type: String, required: true, unique: true, index: true },
+    title: { type: String, required: true },
+    topic: { type: String, required: true },
+    description: { type: String, default: "" },
+    difficulty: { type: String, enum: DIFFICULTIES, required: true },
+    skillMode: { type: String, enum: SKILL_MODES, default: "SHARED" },
+    startDate: { type: Date, required: true },
+    endDate: { type: Date, required: true },
+    schedule: { type: scheduleSchema, required: true },
+    availableDays: { type: Number, required: true },
+    dailyMinutes: { type: Number, default: 60 },
+    goal: String,
+    monthLabels: { type: Boolean, default: false },
+    visibility: { type: String, enum: VISIBILITIES, default: "PRIVATE" },
+    status: { type: String, enum: STATUSES, default: "DRAFT" },
+    creatorId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    phases: { type: [phaseSchema], default: [] },
+    settings: { type: settingsSchema, default: () => ({}) },
+    version: { type: Number, default: 1 },
+  },
+  { timestamps: true }
+);
+
+challengeSchema.index({ visibility: 1, status: 1 });
+
+export const Challenge = mongoose.model("Challenge", challengeSchema);
+
+
+
+========================================
+FILE: src\models\ContactRequest.js
+========================================
+
+// src/models/ContactRequest.js
+import mongoose from "mongoose";
+
+const STATUSES = ["PENDING", "ACCEPTED", "DECLINED", "CANCELLED"];
+
+const contactRequestSchema = new mongoose.Schema(
+  {
+    fromUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    toUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    status: { type: String, enum: STATUSES, default: "PENDING", index: true },
+    message: { type: String, maxlength: 300, default: null },
+    respondedAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+
+// Only one PENDING request per (from, to) pair.
+contactRequestSchema.index(
+  { fromUserId: 1, toUserId: 1, status: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: "PENDING" },
+  }
+);
+
+export const ContactRequest = mongoose.model(
+  "ContactRequest",
+  contactRequestSchema
+);
+export const CONTACT_REQUEST_STATUSES = STATUSES;
+
+
+
+========================================
+FILE: src\models\Conversation.js
+========================================
+
+// src/models/Conversation.js
+import mongoose from "mongoose";
+
+const CONVERSATION_TYPES = ["challenge", "dm", "group"];
+const PARTICIPANT_ROLES = ["MEMBER", "ADMIN"];
+
+const participantSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    role: { type: String, enum: PARTICIPANT_ROLES, default: "MEMBER" },
+    joinedAt: { type: Date, default: Date.now },
+    leftAt: { type: Date, default: null },
+    mutedUntil: { type: Date, default: null },
+    // High-water-mark — everything up to and including this message is "read".
+    lastReadMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+    lastReadAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const conversationSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: CONVERSATION_TYPES, required: true, index: true },
+
+    // Present only when type === "challenge".
+    challengeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Challenge",
+      default: null,
+    },
+
+    // Group-only fields (ignored for dm and challenge).
+    title: { type: String, default: null },
+    avatarUrl: { type: String, default: null },
+
+    participants: { type: [participantSchema], default: [] },
+
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+
+    // Denormalized for fast list rendering — bumped on every message.
+    lastMessageAt: { type: Date, default: null, index: true },
+    lastMessagePreview: { type: String, default: null },
+    lastMessageSenderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    // For DMs only — deterministic key so we never create duplicate DMs.
+    // Format: "<userIdA>_<userIdB>" with ids sorted lexically.
+    dmKey: { type: String, default: null, unique: true, sparse: true },
+
+    messageCount: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
+
+conversationSchema.index({ "participants.userId": 1, lastMessageAt: -1 });
+conversationSchema.index({ challengeId: 1 }, { unique: true, sparse: true });
+
+export const Conversation = mongoose.model("Conversation", conversationSchema);
+export const CONVERSATION_TYPES_ENUM = CONVERSATION_TYPES;
+
+
+
+========================================
+FILE: src\models\Message.js
+========================================
+
+// src/models/Message.js
+import mongoose from "mongoose";
+
+const ATTACHMENT_KINDS = ["image", "file", "audio"]; // video deferred
+
+const attachmentSchema = new mongoose.Schema(
+  {
+    kind: { type: String, enum: ATTACHMENT_KINDS, required: true },
+    url: { type: String, required: true },
+    thumbUrl: { type: String, default: null },
+    mimeType: { type: String, required: true },
+    size: { type: Number, required: true }, // bytes
+    width: { type: Number, default: null },
+    height: { type: Number, default: null },
+    duration: { type: Number, default: null }, // seconds, audio only
+    originalName: { type: String, default: null },
+    cloudinaryPublicId: { type: String, default: null },
+  },
+  { _id: false }
+);
+
+const messageSchema = new mongoose.Schema(
+  {
+    conversationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Conversation",
+      required: true,
+      index: true,
+    },
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    // ULID — sortable by creation time, generated by the client.
+    // Also used for idempotency: unique per sender.
+    clientMessageId: { type: String, required: true },
+
+    body: { type: String, default: "" },
+    attachments: { type: [attachmentSchema], default: [] },
+
+    replyToId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+
+    reactions: { type: mongoose.Schema.Types.Mixed, default: {} },
+
+    editedAt: { type: Date, default: null },
+    deletedAt: { type: Date, default: null },
+
+    // Client's clock, for offline ordering. Server's createdAt is authoritative.
+    localTimestamp: { type: Date, required: true },
+  },
+  { timestamps: true }
+);
+
+// Idempotency: same sender cannot insert the same clientMessageId twice.
+messageSchema.index(
+  { senderId: 1, clientMessageId: 1 },
+  { unique: true }
+);
+
+// History pagination — newest first per conversation.
+messageSchema.index({ conversationId: 1, createdAt: -1 });
+
+// Reply lookup (rare).
+messageSchema.index({ replyToId: 1 }, { sparse: true });
+
+export const Message = mongoose.model("Message", messageSchema);
+export const ATTACHMENT_KINDS_ENUM = ATTACHMENT_KINDS;
+
+
+
+========================================
+FILE: src\models\Participant.js
+========================================
+
+import mongoose from "mongoose";
+
+const participantSchema = new mongoose.Schema(
+  {
+    challengeId: { type: mongoose.Schema.Types.ObjectId, ref: "Challenge", required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    role: { type: String, enum: ["MEMBER", "MODERATOR"], default: "MEMBER" },
+    joinedAt: { type: Date, default: Date.now },
+    lastSyncedAt: Date,
+    streak: {
+      current: { type: Number, default: 0 },
+      longest: { type: Number, default: 0 },
+      lastCompletedDate: Date,
+    },
+    stats: {
+      completed: { type: Number, default: 0 },
+      missed: { type: Number, default: 0 },
+    },
+  },
+  { timestamps: true }
+);
+
+participantSchema.index({ challengeId: 1, userId: 1 }, { unique: true });
+participantSchema.index({ userId: 1 });
+
+export const Participant = mongoose.model("Participant", participantSchema);
+
+
+
+========================================
+FILE: src\models\Progress.js
+========================================
+
+import mongoose from "mongoose";
+
+const progressSchema = new mongoose.Schema(
+  {
+    challengeId: { type: mongoose.Schema.Types.ObjectId, ref: "Challenge", required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    dayId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    dayNumber: { type: Number, required: true },
+    status: {
+      type: String,
+      enum: ["PENDING", "COMPLETED", "MISSED", "LOCKED"],
+      default: "PENDING",
+    },
+    late: { type: Boolean, default: false },
+    completedAt: Date,
+    localTimestamp: Date,
+    note: String,
+    artifactUrl: String,
+    artifactHash: String,
+    syncedAt: { type: Date, default: Date.now },
+  },
+  { timestamps: true }
+);
+
+progressSchema.index({ challengeId: 1, userId: 1, dayId: 1 }, { unique: true });
+progressSchema.index({ challengeId: 1, dayId: 1 });
+progressSchema.index({ userId: 1 });
+
+export const Progress = mongoose.model("Progress", progressSchema);
+
+
+
+========================================
+FILE: src\models\SyncLog.js
+========================================
+
+// src/models/SyncLog.js
+import mongoose from "mongoose";
+
+const syncLogSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    challengeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Challenge",
+      default: null,
+      index: true,
+    },
+    conversationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Conversation",
+      default: null,
+      index: true,
+    },
+    clientActionId: { type: String, required: true },
+    actionType: { type: String, required: true },
+    status: { type: String, enum: ["ACCEPTED", "REJECTED", "CONFLICT"], required: true },
+    reason: String,
+    receivedAt: { type: Date, default: Date.now },
+  },
+  { timestamps: false }
+);
+
+syncLogSchema.index({ userId: 1, clientActionId: 1 }, { unique: true });
+syncLogSchema.index({ receivedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
+
+export const SyncLog = mongoose.model("SyncLog", syncLogSchema);
+
+
+
+========================================
+FILE: src\models\User.js
+========================================
+
+import mongoose from "mongoose";
+import {
+  GENRES,
+  ARCHETYPES,
+  VIBES,
+  DEFAULT_METAPHOR,
+  METAPHOR_LIMITS,
+} from "../data/metaphors.js";
+
+const artSchema = new mongoose.Schema(
+  {
+    source: {
+      type: String,
+      enum: ["catalog", "anilist", "upload"],
+      required: true,
+    },
+    url: { type: String, required: true },
+    thumbUrl: String,
+    attribution: {
+      type: String,
+      maxlength: METAPHOR_LIMITS.attributionMax,
+    },
+    externalId: String, // AniList character id, Cloudinary public_id, etc.
+  },
+  { _id: false }
+);
+
+const metaphorSchema = new mongoose.Schema(
+  {
+    genre: { type: String, enum: GENRES, default: DEFAULT_METAPHOR.genre },
+    archetype: {
+      type: String,
+      enum: ARCHETYPES,
+      default: DEFAULT_METAPHOR.archetype,
+    },
+    vibe: { type: String, enum: VIBES, default: DEFAULT_METAPHOR.vibe },
+    displayName: {
+      type: String,
+      maxlength: METAPHOR_LIMITS.displayNameMax,
+      default: null,
+    },
+    tagline: {
+      type: String,
+      maxlength: METAPHOR_LIMITS.taglineMax,
+      default: null,
+    },
+    art: { type: artSchema, default: null },
+    updatedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const deviceKeySchema = new mongoose.Schema(
+  {
+    keyId: { type: String, required: true },
+    publicKey: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now },
+    revokedAt: Date,
+  },
+  { _id: false }
+);
+
+const settingsSchema = new mongoose.Schema(
+  {
+    notifications: {
+      dailyReminder: { type: Boolean, default: true },
+      streakAtRisk: { type: Boolean, default: true },
+      phaseStart: { type: Boolean, default: true },
+    },
+    theme: { type: String, enum: ["dark", "light", "system"], default: "dark" },
+    privacy: {
+      discoverable: { type: Boolean, default: true },
+      showProgress: { type: Boolean, default: true },
+    },
+  },
+  { _id: false }
+);
+
+const userSchema = new mongoose.Schema(
+  {
+    clerkId: { type: String, required: true, unique: true, index: true },
+    permanentId: { type: String, required: true, unique: true, index: true },
+    username: { type: String, unique: true, sparse: true },
+    fullName: String,
+    metaphor: { type: metaphorSchema, default: () => ({}) },
+    motto: String,
+    skills: { type: [String], default: [] },
+    settings: { type: settingsSchema, default: () => ({}) },
+  },
+  { timestamps: true }
+);
+
+// Indexes for discovery (used by Batch 7+).
+userSchema.index({ "metaphor.genre": 1, "metaphor.archetype": 1 });
+userSchema.index({ "metaphor.vibe": 1 });
+
+export const User = mongoose.model("User", userSchema);
+
+
+
+========================================
+FILE: src\routes\attachments.js
+========================================
+
+// src/routes/attachments.js
+import express from "express";
+import { z } from "zod";
+
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import {
+  buildSignedUpload,
+  fetchResourceMetadata,
+  isMimeAllowed,
+  SIZE_LIMITS,
+} from "../services/cloudinary.js";
+import { uploadSignLimiter } from "../middleware/rateLimit.js";
+
+export const attachmentsRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const signSchema = z.object({
+  kind: z.enum(["image", "file"]),
+  size: z.number().int().positive(),
+  mimeType: z.string().min(3).max(120),
+  originalName: z.string().max(255).optional(),
+});
+
+const confirmSchema = z.object({
+  kind: z.enum(["image", "file"]),
+  publicId: z.string().min(3).max(300),
+});
+
+// ── POST /attachments/sign ───────────────────────────
+// Client asks: "I want to upload an image/file of X bytes with Y mime type."
+// Server validates, then returns signed upload params.
+attachmentsRouter.post(
+  "/sign",
+  requireAuth,
+  uploadSignLimiter,
+  validate(signSchema),
+  async (req, res, next) => {
+    try {
+      const { kind, size, mimeType } = req.body;
+
+      // Size check
+      const limit = SIZE_LIMITS[kind];
+      if (!limit) {
+        return res.status(400).json({
+          error: "UNSUPPORTED_KIND",
+          message: `kind must be "image" or "file"`,
+        });
+      }
+      if (size > limit) {
+        return res.status(413).json({
+          error: "FILE_TOO_LARGE",
+          message: `Max ${limit} bytes for ${kind}. Received ${size}.`,
+          maxBytes: limit,
+        });
+      }
+
+      // MIME allowlist
+      if (!isMimeAllowed(kind, mimeType)) {
+        return res.status(415).json({
+          error: "UNSUPPORTED_MIME",
+          message: `MIME type ${mimeType} is not allowed for ${kind}.`,
+        });
+      }
+
+      const signed = buildSignedUpload({
+        kind,
+        userId: String(req.userId),
+      });
+
+      res.json({
+        uploadUrl: signed.uploadUrl,
+        resourceType: signed.resourceType,
+        params: signed.params,
+        // Client should read these to know the caps
+        limits: { maxBytes: limit },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── POST /attachments/confirm ────────────────────────
+// After Cloudinary upload succeeds, the client calls this to prove the
+// publicId exists and get back canonical URLs + metadata.
+attachmentsRouter.post(
+  "/confirm",
+  requireAuth,
+  validate(confirmSchema),
+  async (req, res, next) => {
+    try {
+      const { kind, publicId } = req.body;
+
+      // Ownership check: the publicId must live under our per-user folder.
+      const expectedPrefix = `attachments/${
+        kind === "image" ? "image" : "raw"
+      }/${req.userId}/`;
+      if (!publicId.startsWith(expectedPrefix)) {
+        return res.status(403).json({
+          error: "NOT_YOUR_RESOURCE",
+          message: `publicId must start with "${expectedPrefix}".`,
+        });
+      }
+
+      const meta = await fetchResourceMetadata(publicId, kind);
+      if (!meta) {
+        return res.status(404).json({
+          error: "RESOURCE_NOT_FOUND",
+          message: "Cloudinary has no such resource in your account.",
+        });
+      }
+
+      res.json({
+        attachment: {
+          kind,
+          url: meta.url,
+          thumbUrl: meta.thumbUrl,
+          mimeType: meta.mimeType,
+          size: meta.size,
+          width: meta.width,
+          height: meta.height,
+          cloudinaryPublicId: publicId,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\routes\challenges.js
+========================================
+
+// src/routes/challenges.js
+import express from "express";
+import { z } from "zod";
+import mongoose from "mongoose";
+
+import { Challenge } from "../models/Challenge.js";
+import { Participant } from "../models/Participant.js";
+import { Conversation } from "../models/Conversation.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { generateSlug, generateInviteCode } from "../utils/slug.js";
+import { resolveChallengeDays } from "../utils/scheduleResolver.js";
+import { generateValidatedProgression } from "../services/geminiGenerate.js";
+import { generateLimiter } from "../middleware/rateLimit.js";
+
+export const challengesRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const scheduleSchema = z.object({
+  type: z.enum(["weekdays", "custom", "explicit"]),
+  days: z.array(z.number().int().min(0).max(6)).optional(),
+  dates: z.array(z.string()).optional(),
+});
+
+const baseChallengeSchema = z.object({
+  title: z.string().min(3).max(120),
+  topic: z.string().min(2).max(80),
+  description: z.string().max(2000).default(""),
+  difficulty: z.enum([
+    "BEGINNER",
+    "ELEMENTARY",
+    "INTERMEDIATE",
+    "ADVANCED",
+    "EXPERT",
+  ]),
+  startDate: z.string(),
+  endDate: z.string(),
+  schedule: scheduleSchema,
+  dailyMinutes: z.number().int().min(5).max(600).default(60),
+  goal: z.string().max(500).optional(),
+  visibility: z.enum(["PRIVATE", "UNLISTED", "PUBLIC"]).default("PRIVATE"),
+  monthLabels: z.boolean().default(false),
+});
+
+const createChallengeSchema = baseChallengeSchema.refine(
+  (d) => new Date(d.startDate) <= new Date(d.endDate),
+  { message: "startDate must be before endDate", path: ["endDate"] }
+);
+
+const updateChallengeSchema = baseChallengeSchema.partial();
+
+// ── Helpers ──────────────────────────────────────────
+function serializeChallenge(c) {
+  return {
+    id: String(c._id),
+    slug: c.slug,
+    inviteCode: c.inviteCode,
+    title: c.title,
+    topic: c.topic,
+    description: c.description,
+    difficulty: c.difficulty,
+    skillMode: c.skillMode,
+    startDate: c.startDate,
+    endDate: c.endDate,
+    schedule: c.schedule,
+    availableDays: c.availableDays,
+    dailyMinutes: c.dailyMinutes,
+    goal: c.goal,
+    monthLabels: c.monthLabels,
+    visibility: c.visibility,
+    status: c.status,
+    creatorId: String(c.creatorId),
+    phases: c.phases ?? [],
+    settings: c.settings,
+    version: c.version,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+  };
+}
+
+async function upsertCreatorParticipant(challengeId, userId) {
+  return Participant.updateOne(
+    { challengeId, userId },
+    {
+      $setOnInsert: {
+        challengeId,
+        userId,
+        role: "MODERATOR",
+        joinedAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+/**
+ * Ensure the challenge has a conversation. Called on publish.
+ * Idempotent — safe to call repeatedly.
+ */
+async function ensureChallengeConversation(challenge) {
+  let convo = await Conversation.findOne({ challengeId: challenge._id });
+
+  if (!convo) {
+    convo = await Conversation.create({
+      type: "challenge",
+      challengeId: challenge._id,
+      participants: [
+        {
+          userId: challenge.creatorId,
+          role: "ADMIN",
+          joinedAt: new Date(),
+        },
+      ],
+      createdBy: challenge.creatorId,
+    });
+    console.log(
+      `[challenges] created conversation ${convo._id} for ${challenge.slug}`
+    );
+  }
+
+  return convo;
+}
+
+/**
+ * Add a user to the challenge conversation if not already an active participant.
+ * Idempotent.
+ */
+async function addConversationParticipant(challengeId, userId, role) {
+  const convo = await Conversation.findOne({ challengeId });
+  if (!convo) return null;
+
+  const alreadyIn = convo.participants.some(
+    (p) => String(p.userId) === String(userId) && !p.leftAt
+  );
+  if (alreadyIn) return convo;
+
+  convo.participants.push({
+    userId,
+    role,
+    joinedAt: new Date(),
+  });
+  await convo.save();
+  return convo;
+}
+
+/**
+ * Mark a user as having left the challenge conversation.
+ * Idempotent.
+ */
+async function removeConversationParticipant(challengeId, userId) {
+  const convo = await Conversation.findOne({ challengeId });
+  if (!convo) return null;
+
+  const p = convo.participants.find(
+    (x) => String(x.userId) === String(userId) && !x.leftAt
+  );
+  if (!p) return convo;
+
+  p.leftAt = new Date();
+  await convo.save();
+  return convo;
+}
+
+// ── POST /challenges ─────────────────────────────────
+challengesRouter.post(
+  "/",
+  requireAuth,
+  validate(createChallengeSchema),
+  async (req, res, next) => {
+    try {
+      const body = req.body;
+      const start = new Date(body.startDate);
+      const end = new Date(body.endDate);
+
+      const challengeDays = resolveChallengeDays(start, end, body.schedule);
+
+      if (challengeDays.length === 0) {
+        return res.status(400).json({
+          error: "NO_CHALLENGE_DAYS",
+          message: "The given schedule produces zero challenge days.",
+        });
+      }
+
+      const slug = await generateSlug(body.title);
+      const inviteCode = await generateInviteCode();
+
+      const challenge = await Challenge.create({
+        slug,
+        inviteCode,
+        title: body.title,
+        topic: body.topic,
+        description: body.description,
+        difficulty: body.difficulty,
+        skillMode: "SHARED",
+        startDate: start,
+        endDate: end,
+        schedule: body.schedule,
+        availableDays: challengeDays.length,
+        dailyMinutes: body.dailyMinutes,
+        goal: body.goal,
+        monthLabels: body.monthLabels,
+        visibility: body.visibility,
+        status: "DRAFT",
+        creatorId: req.userId,
+        phases: [],
+      });
+
+      res.status(201).json({ challenge: serializeChallenge(challenge) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /challenges/mine ─────────────────────────────
+challengesRouter.get("/mine", requireAuth, async (req, res, next) => {
+  try {
+    const challenges = await Challenge.find({ creatorId: req.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({ challenges: challenges.map(serializeChallenge) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /challenges/joined ───────────────────────────
+challengesRouter.get("/joined", requireAuth, async (req, res, next) => {
+  try {
+    const participations = await Participant.find({ userId: req.userId })
+      .sort({ joinedAt: -1 })
+      .lean();
+
+    const challengeIds = participations.map((p) => p.challengeId);
+    const challenges = await Challenge.find({
+      _id: { $in: challengeIds },
+      status: "PUBLISHED",
+    }).lean();
+
+    const challengeMap = new Map(challenges.map((c) => [String(c._id), c]));
+
+    const result = participations
+      .filter((p) => challengeMap.has(String(p.challengeId)))
+      .map((p) => {
+        const c = challengeMap.get(String(p.challengeId));
+        return {
+          challenge: serializeChallenge(c),
+          participant: {
+            role: p.role,
+            joinedAt: p.joinedAt,
+            streak: p.streak,
+            stats: p.stats,
+          },
+        };
+      });
+
+    res.json({ joined: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /challenges/:slug/generate ──────────────────
+challengesRouter.post(
+  "/:slug/generate",
+  requireAuth,
+  generateLimiter,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+      if (String(challenge.creatorId) !== String(req.userId)) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+      if (challenge.status !== "DRAFT") {
+        return res.status(409).json({
+          error: "NOT_DRAFT",
+          message: "Only drafts can be generated.",
+        });
+      }
+
+      const spec = {
+        topic: challenge.topic,
+        description: challenge.description,
+        difficulty: challenge.difficulty,
+        goal: challenge.goal,
+        availableDays: challenge.availableDays,
+        dailyMinutes: challenge.dailyMinutes,
+        startDate: challenge.startDate.toISOString().slice(0, 10),
+        endDate: challenge.endDate.toISOString().slice(0, 10),
+        creatorInstructions: req.body?.creatorInstructions,
+      };
+
+      const progression = await generateValidatedProgression(spec);
+
+      const scheduledDates = resolveChallengeDays(
+        challenge.startDate,
+        challenge.endDate,
+        challenge.schedule
+      );
+
+      const phases = progression.phases.map((phase, phaseIdx) => ({
+        order: phaseIdx,
+        title: phase.title,
+        description: phase.description,
+        monthLabel: phase.monthLabel,
+        days: phase.days.map((day) => {
+          const scheduled = scheduledDates[day.dayNumber - 1];
+          return {
+            _id: new mongoose.Types.ObjectId(),
+            dayNumber: day.dayNumber,
+            scheduledDate: scheduled,
+            title: day.title,
+            type: day.type,
+            description: day.description,
+            objective: day.objective,
+            requirements: day.requirements,
+            estimatedMinutes: day.estimatedMinutes,
+            isFinal: day.type === "FINAL",
+          };
+        }),
+      }));
+
+      challenge.phases = phases;
+      challenge.version += 1;
+      await challenge.save();
+
+      res.json({
+        challenge: serializeChallenge(challenge),
+        generated: {
+          phaseCount: phases.length,
+          dayCount: progression.phases.reduce((n, p) => n + p.days.length, 0),
+          summary: progression.challenge.summary,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── POST /challenges/:slug/publish ───────────────────
+challengesRouter.post(
+  "/:slug/publish",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+      if (String(challenge.creatorId) !== String(req.userId)) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const alreadyPublished = challenge.status === "PUBLISHED";
+
+      if (!alreadyPublished) {
+        if (!challenge.phases || challenge.phases.length === 0) {
+          return res.status(409).json({
+            error: "NO_PHASES",
+            message:
+              "Generate phases first: POST /challenges/:slug/generate",
+          });
+        }
+
+        // Upsert participant BEFORE flipping status. If this throws,
+        // the challenge stays DRAFT and /publish can be retried.
+        await upsertCreatorParticipant(challenge._id, req.userId);
+
+        challenge.status = "PUBLISHED";
+        challenge.version += 1;
+        await challenge.save();
+      } else {
+        // Already published: still make sure the creator is a participant.
+        await upsertCreatorParticipant(challenge._id, req.userId);
+      }
+
+      // Ensure the challenge conversation exists (idempotent).
+      await ensureChallengeConversation(challenge);
+
+      res.json({
+        challenge: serializeChallenge(challenge),
+        alreadyPublished,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── POST /challenges/:slug/join ──────────────────────
+challengesRouter.post(
+  "/:slug/join",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+      if (challenge.status !== "PUBLISHED") {
+        return res.status(409).json({
+          error: "NOT_PUBLISHED",
+          message:
+            "Challenge must be published before joining. POST /challenges/:slug/publish",
+        });
+      }
+
+      const existing = await Participant.findOne({
+        challengeId: challenge._id,
+        userId: req.userId,
+      });
+      if (existing) {
+        // Even on repeat join, make sure they're in the conversation.
+        await addConversationParticipant(
+          challenge._id,
+          req.userId,
+          String(challenge.creatorId) === String(req.userId)
+            ? "ADMIN"
+            : "MEMBER"
+        );
+
+        return res.status(200).json({
+          participant: {
+            userId: String(existing.userId),
+            role: existing.role,
+            joinedAt: existing.joinedAt,
+            streak: existing.streak,
+            stats: existing.stats,
+          },
+          alreadyJoined: true,
+        });
+      }
+
+      const participant = await Participant.create({
+        challengeId: challenge._id,
+        userId: req.userId,
+        role:
+          String(challenge.creatorId) === String(req.userId)
+            ? "MODERATOR"
+            : "MEMBER",
+      });
+
+      // Add to challenge conversation (idempotent).
+      await addConversationParticipant(
+        challenge._id,
+        req.userId,
+        String(challenge.creatorId) === String(req.userId)
+          ? "ADMIN"
+          : "MEMBER"
+      );
+
+      res.status(201).json({
+        participant: {
+          userId: String(participant.userId),
+          role: participant.role,
+          joinedAt: participant.joinedAt,
+          streak: participant.streak,
+          stats: participant.stats,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── DELETE /challenges/:slug/leave ───────────────────
+challengesRouter.delete(
+  "/:slug/leave",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+      if (String(challenge.creatorId) === String(req.userId)) {
+        return res.status(409).json({
+          error: "CREATOR_CANNOT_LEAVE",
+          message: "Creators cannot leave their own challenge.",
+        });
+      }
+
+      await Participant.deleteOne({
+        challengeId: challenge._id,
+        userId: req.userId,
+      });
+
+      // Mark conversation participant as left (keep history).
+      await removeConversationParticipant(challenge._id, req.userId);
+
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /challenges/:slug ────────────────────────────
+challengesRouter.get("/:slug", requireAuth, async (req, res, next) => {
+  try {
+    const challenge = await Challenge.findOne({ slug: req.params.slug });
+    if (!challenge) {
+      return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+    }
+
+    const isCreator = String(challenge.creatorId) === String(req.userId);
+    const isParticipant = await Participant.exists({
+      challengeId: challenge._id,
+      userId: req.userId,
+    });
+    const isVisible =
+      challenge.visibility === "PUBLIC" || challenge.visibility === "UNLISTED";
+
+    if (!isCreator && !isParticipant && !isVisible) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    const participantCount = await Participant.countDocuments({
+      challengeId: challenge._id,
+    });
+
+    res.json({
+      challenge: serializeChallenge(challenge),
+      participantCount,
+      isParticipant: !!isParticipant,
+      isCreator,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PATCH /challenges/:slug ──────────────────────────
+challengesRouter.patch(
+  "/:slug",
+  requireAuth,
+  validate(updateChallengeSchema),
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+
+      if (String(challenge.creatorId) !== String(req.userId)) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      if (challenge.status !== "DRAFT") {
+        return res.status(409).json({
+          error: "CHALLENGE_NOT_DRAFT",
+          message: "Only drafts can be edited.",
+        });
+      }
+
+      const body = req.body;
+
+      const nextStart = body.startDate
+        ? new Date(body.startDate)
+        : challenge.startDate;
+      const nextEnd = body.endDate
+        ? new Date(body.endDate)
+        : challenge.endDate;
+      const nextSchedule = body.schedule ?? challenge.schedule;
+
+      if (nextStart > nextEnd) {
+        return res.status(400).json({
+          error: "INVALID_DATE_RANGE",
+          message: "startDate must be before endDate",
+        });
+      }
+
+      const recompute = body.startDate || body.endDate || body.schedule;
+      let nextAvailableDays = challenge.availableDays;
+      if (recompute) {
+        const days = resolveChallengeDays(nextStart, nextEnd, nextSchedule);
+        if (days.length === 0) {
+          return res.status(400).json({
+            error: "NO_CHALLENGE_DAYS",
+            message: "The updated schedule produces zero challenge days.",
+          });
+        }
+        nextAvailableDays = days.length;
+      }
+
+      if (body.title) challenge.title = body.title;
+      if (body.topic) challenge.topic = body.topic;
+      if (body.description !== undefined) challenge.description = body.description;
+      if (body.difficulty) challenge.difficulty = body.difficulty;
+      if (body.dailyMinutes) challenge.dailyMinutes = body.dailyMinutes;
+      if (body.goal !== undefined) challenge.goal = body.goal;
+      if (body.visibility) challenge.visibility = body.visibility;
+      if (body.monthLabels !== undefined) challenge.monthLabels = body.monthLabels;
+
+      if (recompute) {
+        challenge.startDate = nextStart;
+        challenge.endDate = nextEnd;
+        challenge.schedule = nextSchedule;
+        challenge.availableDays = nextAvailableDays;
+      }
+
+      challenge.version += 1;
+      await challenge.save();
+
+      res.json({ challenge: serializeChallenge(challenge) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── DELETE /challenges/:slug ─────────────────────────
+challengesRouter.delete("/:slug", requireAuth, async (req, res, next) => {
+  try {
+    const challenge = await Challenge.findOne({ slug: req.params.slug });
+    if (!challenge) {
+      return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+    }
+
+    if (String(challenge.creatorId) !== String(req.userId)) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    if (challenge.status === "PUBLISHED") {
+      return res.status(409).json({
+        error: "CANNOT_DELETE_PUBLISHED",
+        message: "Archive the challenge instead.",
+      });
+    }
+
+    await Challenge.deleteOne({ _id: challenge._id });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+========================================
+FILE: src\routes\contacts.js
+========================================
+
+// src/routes/contacts.js
+import express from "express";
+import { z } from "zod";
+import mongoose from "mongoose";
+
+import { ContactRequest } from "../models/ContactRequest.js";
+import { User } from "../models/User.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { contactRequestLimiter } from "../middleware/rateLimit.js";
+import { serializeUser } from "../utils/serializeUser.js";
+import { emitToUser } from "../services/socket.js";
+
+export const contactsRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const sendRequestSchema = z.object({
+  toUserId: z.string().min(1),
+  message: z.string().max(300).optional(),
+});
+
+// ── Helpers ──────────────────────────────────────────
+async function serializeContactRequest(cr, { includeUsers = true } = {}) {
+  const base = {
+    id: String(cr._id),
+    fromUserId: String(cr.fromUserId),
+    toUserId: String(cr.toUserId),
+    status: cr.status,
+    message: cr.message,
+    respondedAt: cr.respondedAt,
+    createdAt: cr.createdAt,
+    updatedAt: cr.updatedAt,
+  };
+
+  if (!includeUsers) return base;
+
+  const userIds = [cr.fromUserId, cr.toUserId];
+  const users = await User.find({ _id: { $in: userIds } })
+    .select("-settings -clerkId")
+    .lean();
+  const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+  return {
+    ...base,
+    from: serializeUser(userMap.get(String(cr.fromUserId))),
+    to: serializeUser(userMap.get(String(cr.toUserId))),
+  };
+}
+
+// ── POST /contacts/request ───────────────────────────
+contactsRouter.post(
+  "/request",
+  requireAuth,
+  contactRequestLimiter,
+  validate(sendRequestSchema),
+  async (req, res, next) => {
+    try {
+      const { toUserId, message } = req.body;
+
+      if (!mongoose.Types.ObjectId.isValid(toUserId)) {
+        return res.status(400).json({ error: "INVALID_USER_ID" });
+      }
+      if (String(toUserId) === String(req.userId)) {
+        return res.status(400).json({ error: "CANNOT_REQUEST_SELF" });
+      }
+
+      const target = await User.findById(toUserId, { _id: 1 }).lean();
+      if (!target) {
+        return res.status(404).json({ error: "USER_NOT_FOUND" });
+      }
+
+      // Existing pending request?
+      const existing = await ContactRequest.findOne({
+        fromUserId: req.userId,
+        toUserId,
+        status: "PENDING",
+      });
+      if (existing) {
+        return res.status(200).json({
+          request: await serializeContactRequest(existing),
+          alreadyPending: true,
+        });
+      }
+
+      // Reverse pending? (they already requested you)
+      const reverse = await ContactRequest.findOne({
+        fromUserId: toUserId,
+        toUserId: req.userId,
+        status: "PENDING",
+      });
+      if (reverse) {
+        return res.status(409).json({
+          error: "THEY_ALREADY_REQUESTED",
+          message:
+            "This user already sent you a request. Accept theirs instead.",
+          requestId: String(reverse._id),
+        });
+      }
+
+      const cr = await ContactRequest.create({
+        fromUserId: req.userId,
+        toUserId,
+        message: message ?? null,
+      });
+
+      // Real-time notify the target if connected.
+      emitToUser(String(toUserId), "contact:request", {
+        id: String(cr._id),
+        fromUserId: String(req.userId),
+      });
+
+      res.status(201).json({
+        request: await serializeContactRequest(cr),
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /contacts/requests?direction=incoming|outgoing|all ──
+contactsRouter.get("/requests", requireAuth, async (req, res, next) => {
+  try {
+    const direction = req.query.direction ?? "all";
+    const status = req.query.status ?? "PENDING";
+
+    let query = {};
+    if (direction === "incoming") {
+      query = { toUserId: req.userId, status };
+    } else if (direction === "outgoing") {
+      query = { fromUserId: req.userId, status };
+    } else {
+      query = {
+        $or: [{ toUserId: req.userId }, { fromUserId: req.userId }],
+        status,
+      };
+    }
+
+    const list = await ContactRequest.find(query)
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    res.json({
+      requests: await Promise.all(list.map((cr) => serializeContactRequest(cr))),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /contacts/requests/:id/accept ───────────────
+contactsRouter.post("/requests/:id/accept", requireAuth, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "INVALID_ID" });
+    }
+
+    const cr = await ContactRequest.findById(req.params.id);
+    if (!cr) return res.status(404).json({ error: "REQUEST_NOT_FOUND" });
+    if (String(cr.toUserId) !== String(req.userId)) {
+      return res.status(403).json({ error: "NOT_RECIPIENT" });
+    }
+    if (cr.status !== "PENDING") {
+      return res.status(409).json({
+        error: "NOT_PENDING",
+        message: `Request is already ${cr.status}.`,
+      });
+    }
+
+    cr.status = "ACCEPTED";
+    cr.respondedAt = new Date();
+    await cr.save();
+
+    emitToUser(String(cr.fromUserId), "contact:accepted", {
+      id: String(cr._id),
+      toUserId: String(req.userId),
+    });
+
+    res.json({ request: await serializeContactRequest(cr) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /contacts/requests/:id/decline ──────────────
+contactsRouter.post("/requests/:id/decline", requireAuth, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "INVALID_ID" });
+    }
+
+    const cr = await ContactRequest.findById(req.params.id);
+    if (!cr) return res.status(404).json({ error: "REQUEST_NOT_FOUND" });
+    if (String(cr.toUserId) !== String(req.userId)) {
+      return res.status(403).json({ error: "NOT_RECIPIENT" });
+    }
+    if (cr.status !== "PENDING") {
+      return res.status(409).json({ error: "NOT_PENDING" });
+    }
+
+    cr.status = "DECLINED";
+    cr.respondedAt = new Date();
+    await cr.save();
+
+    res.json({ request: await serializeContactRequest(cr) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /contacts/requests/:id/cancel ───────────────
+contactsRouter.post("/requests/:id/cancel", requireAuth, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "INVALID_ID" });
+    }
+
+    const cr = await ContactRequest.findById(req.params.id);
+    if (!cr) return res.status(404).json({ error: "REQUEST_NOT_FOUND" });
+    if (String(cr.fromUserId) !== String(req.userId)) {
+      return res.status(403).json({ error: "NOT_SENDER" });
+    }
+    if (cr.status !== "PENDING") {
+      return res.status(409).json({ error: "NOT_PENDING" });
+    }
+
+    cr.status = "CANCELLED";
+    cr.respondedAt = new Date();
+    await cr.save();
+
+    res.json({ request: await serializeContactRequest(cr) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /contacts ────────────────────────────────────
+// Your contacts: users you have an ACCEPTED request with (either direction).
+contactsRouter.get("/", requireAuth, async (req, res, next) => {
+  try {
+    const accepted = await ContactRequest.find({
+      $or: [{ toUserId: req.userId }, { fromUserId: req.userId }],
+      status: "ACCEPTED",
+    })
+      .sort({ respondedAt: -1 })
+      .limit(500)
+      .lean();
+
+    const contactIds = new Set();
+    for (const cr of accepted) {
+      const other =
+        String(cr.fromUserId) === String(req.userId)
+          ? String(cr.toUserId)
+          : String(cr.fromUserId);
+      contactIds.add(other);
+    }
+
+    const users = await User.find({ _id: { $in: [...contactIds] } })
+      .select("-settings -clerkId")
+      .lean();
+
+    res.json({
+      contacts: users.map((u) => serializeUser(u)),
+      count: users.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+========================================
+FILE: src\routes\conversations.js
+========================================
+
+// src/routes/conversations.js
+import express from "express";
+import { z } from "zod";
+import mongoose from "mongoose";
+
+import { Conversation } from "../models/Conversation.js";
+import { Message } from "../models/Message.js";
+import { User } from "../models/User.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { serializeUser } from "../utils/serializeUser.js";
+
+export const conversationsRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const createConversationSchema = z.object({
+  type: z.enum(["dm", "group"]),
+  participantIds: z.array(z.string()).min(1).max(50),
+  title: z.string().max(80).optional(),
+});
+
+// ── Helpers ──────────────────────────────────────────
+function dmKeyFor(a, b) {
+  return [String(a), String(b)].sort().join("_");
+}
+
+function serializeParticipant(p, user) {
+  return {
+    userId: String(p.userId),
+    role: p.role,
+    joinedAt: p.joinedAt,
+    leftAt: p.leftAt,
+    lastReadMessageId: p.lastReadMessageId ? String(p.lastReadMessageId) : null,
+    lastReadAt: p.lastReadAt,
+    user: serializeUser(user),
+  };
+}
+
+async function serializeConversation(convo, { includeParticipants = true } = {}) {
+  const base = {
+    id: String(convo._id),
+    type: convo.type,
+    challengeId: convo.challengeId ? String(convo.challengeId) : null,
+    title: convo.title,
+    avatarUrl: convo.avatarUrl,
+    createdBy: String(convo.createdBy),
+    lastMessageAt: convo.lastMessageAt,
+    lastMessagePreview: convo.lastMessagePreview,
+    lastMessageSenderId: convo.lastMessageSenderId
+      ? String(convo.lastMessageSenderId)
+      : null,
+    messageCount: convo.messageCount ?? 0,
+    createdAt: convo.createdAt,
+    updatedAt: convo.updatedAt,
+  };
+
+  if (!includeParticipants) return base;
+
+  const userIds = convo.participants.map((p) => p.userId);
+  const users = await User.find({ _id: { $in: userIds } }).lean();
+  const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+  return {
+    ...base,
+    participants: convo.participants.map((p) =>
+      serializeParticipant(p, userMap.get(String(p.userId)))
+    ),
+  };
+}
+
+// ── POST /conversations ─────────────────────────────
+// Create a DM or group. Idempotent for DMs (via dmKey).
+conversationsRouter.post(
+  "/",
+  requireAuth,
+  validate(createConversationSchema),
+  async (req, res, next) => {
+    try {
+      const { type, participantIds, title } = req.body;
+
+      // Never include self twice.
+      const cleanIds = Array.from(
+        new Set(participantIds.filter((id) => String(id) !== String(req.userId)))
+      );
+
+      if (cleanIds.length === 0) {
+        return res.status(400).json({
+          error: "NO_OTHER_PARTICIPANTS",
+          message: "Provide at least one other participant.",
+        });
+      }
+
+      // Verify all participants exist.
+      const users = await User.find({ _id: { $in: cleanIds } }, { _id: 1 }).lean();
+      if (users.length !== cleanIds.length) {
+        return res.status(400).json({
+          error: "UNKNOWN_PARTICIPANT",
+          message: "One or more participantIds do not exist.",
+        });
+      }
+
+      // ── DM: exactly 2 people, idempotent via dmKey ─
+      if (type === "dm") {
+        if (cleanIds.length !== 1) {
+          return res.status(400).json({
+            error: "DM_REQUIRES_ONE_PARTICIPANT",
+            message: "A DM is between exactly two users.",
+          });
+        }
+
+        const otherId = cleanIds[0];
+        const dmKey = dmKeyFor(req.userId, otherId);
+
+        let convo = await Conversation.findOne({ dmKey });
+
+        if (!convo) {
+          convo = await Conversation.create({
+            type: "dm",
+            dmKey,
+            participants: [
+              { userId: req.userId, role: "ADMIN", joinedAt: new Date() },
+              { userId: otherId, role: "MEMBER", joinedAt: new Date() },
+            ],
+            createdBy: req.userId,
+          });
+        }
+
+        return res.status(200).json({
+          conversation: await serializeConversation(convo),
+          alreadyExisted:
+            !!convo.createdAt && convo.createdAt < new Date(Date.now() - 500),
+        });
+      }
+
+      // ── Group: 3+ people, no idempotency key ────────
+      const participants = [
+        { userId: req.userId, role: "ADMIN", joinedAt: new Date() },
+        ...cleanIds.map((id) => ({
+          userId: id,
+          role: "MEMBER",
+          joinedAt: new Date(),
+        })),
+      ];
+
+      const convo = await Conversation.create({
+        type: "group",
+        title: title ?? null,
+        participants,
+        createdBy: req.userId,
+      });
+
+      res.status(201).json({
+        conversation: await serializeConversation(convo),
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /conversations ──────────────────────────────
+// List my conversations, newest activity first.
+// Includes unreadCount per conversation (messages from others since watermark).
+conversationsRouter.get("/", requireAuth, async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+
+    const convos = await Conversation.find({
+      participants: {
+        $elemMatch: { userId: req.userId, leftAt: null },
+      },
+    })
+      .sort({ lastMessageAt: -1, updatedAt: -1 })
+      .limit(limit)
+      .lean();
+
+    // Compute unread counts in parallel.
+    const unreadCounts = await Promise.all(
+      convos.map(async (c) => {
+        const me = c.participants.find(
+          (p) => String(p.userId) === String(req.userId)
+        );
+        const lastReadId = me?.lastReadMessageId;
+
+        const query = {
+          conversationId: c._id,
+          senderId: { $ne: req.userId },
+          deletedAt: null,
+        };
+
+        if (lastReadId) {
+          const watermark = await Message.findById(lastReadId, {
+            createdAt: 1,
+          }).lean();
+          if (watermark) {
+            query.createdAt = { $gt: watermark.createdAt };
+          }
+        }
+
+        return Message.countDocuments(query);
+      })
+    );
+
+    const serialized = await Promise.all(
+      convos.map(async (c, i) => {
+        const base = await serializeConversation(c, {
+          includeParticipants: false,
+        });
+        return { ...base, unreadCount: unreadCounts[i] };
+      })
+    );
+
+    res.json({ conversations: serialized });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /conversations/:id ──────────────────────────
+conversationsRouter.get("/:id", requireAuth, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "INVALID_ID" });
+    }
+
+    const convo = await Conversation.findById(req.params.id);
+    if (!convo) {
+      return res.status(404).json({ error: "CONVERSATION_NOT_FOUND" });
+    }
+
+    const isParticipant = convo.participants.some(
+      (p) => String(p.userId) === String(req.userId) && !p.leftAt
+    );
+    if (!isParticipant) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    res.json({ conversation: await serializeConversation(convo) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /conversations/:id/read ────────────────────
+// Advance the read watermark. Never downgrades — stale receipts are ignored.
+conversationsRouter.post(
+  "/:id/read",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        return res.status(400).json({ error: "INVALID_ID" });
+      }
+
+      const { messageId } = req.body ?? {};
+      if (!messageId || !mongoose.Types.ObjectId.isValid(messageId)) {
+        return res.status(400).json({ error: "INVALID_MESSAGE_ID" });
+      }
+
+      const convo = await Conversation.findById(req.params.id);
+      if (!convo) {
+        return res.status(404).json({ error: "CONVERSATION_NOT_FOUND" });
+      }
+
+      const p = convo.participants.find(
+        (x) => String(x.userId) === String(req.userId) && !x.leftAt
+      );
+      if (!p) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      // Fetch the target message to get its createdAt.
+      const targetMsg = await Message.findOne(
+        { _id: messageId, conversationId: convo._id },
+        { createdAt: 1 }
+      ).lean();
+      if (!targetMsg) {
+        return res.status(404).json({ error: "MESSAGE_NOT_FOUND" });
+      }
+
+      // Only advance forward.
+      let advance = true;
+      if (p.lastReadMessageId) {
+        const current = await Message.findById(p.lastReadMessageId, {
+          createdAt: 1,
+        }).lean();
+        if (current && current.createdAt >= targetMsg.createdAt) {
+          advance = false;
+        }
+      }
+
+      if (advance) {
+        p.lastReadMessageId = messageId;
+        p.lastReadAt = new Date();
+        await convo.save();
+
+        const { emitToConversation } = await import("../services/socket.js");
+        emitToConversation(req.params.id, "receipt:read", {
+          conversationId: req.params.id,
+          userId: String(req.userId),
+          lastReadMessageId: String(messageId),
+          lastReadAt: p.lastReadAt,
+        });
+      }
+
+      res.json({
+        ok: true,
+        advanced: advance,
+        lastReadMessageId: p.lastReadMessageId
+          ? String(p.lastReadMessageId)
+          : null,
+        lastReadAt: p.lastReadAt,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /conversations/:id/reads ─────────────────────
+// Per-participant read watermarks. Powers "Seen by N of M" UI.
+conversationsRouter.get(
+  "/:id/reads",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        return res.status(400).json({ error: "INVALID_ID" });
+      }
+
+      const convo = await Conversation.findById(req.params.id).lean();
+      if (!convo) {
+        return res.status(404).json({ error: "CONVERSATION_NOT_FOUND" });
+      }
+
+      const isParticipant = convo.participants.some(
+        (p) => String(p.userId) === String(req.userId) && !p.leftAt
+      );
+      if (!isParticipant) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      res.json({
+        reads: convo.participants
+          .filter((p) => !p.leftAt)
+          .map((p) => ({
+            userId: String(p.userId),
+            lastReadMessageId: p.lastReadMessageId
+              ? String(p.lastReadMessageId)
+              : null,
+            lastReadAt: p.lastReadAt,
+          })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\routes\dev.js
+========================================
+
+// src/routes/dev.js
+import express from "express";
+import { config } from "../config.js";
+import { devTokenLimiter } from "../middleware/rateLimit.js";
+
+export const devRouter = express.Router();
+
+// Hard guard: never mount in production.
+if (config.env === "production") {
+  throw new Error("devRouter must not be loaded in production");
+}
+
+const REQUESTED_TTL_SECONDS = 60 * 60; // ask for 1h — Clerk may ignore
+
+devRouter.post("/token", devTokenLimiter, async (req, res, next) => {
+  try {
+    const secret = req.headers["x-dev-secret"];
+    if (!secret || secret !== process.env.DEV_TOKEN_SECRET) {
+      return res.status(401).json({ error: "BAD_DEV_SECRET" });
+    }
+
+    const { userId } = req.body ?? {};
+
+    if (!userId || !/^user_[A-Za-z0-9]{20,}$/.test(userId)) {
+      return res.status(400).json({
+        error: "INVALID_USER_ID",
+        message: `userId looks wrong: "${userId}" (length ${userId?.length})`,
+      });
+    }
+
+    // ── Create session ─────────────────────────────
+    const sessionRes = await fetch("https://api.clerk.com/v1/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.clerk.secretKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ user_id: userId }),
+    });
+
+    if (!sessionRes.ok) {
+      const text = await sessionRes.text();
+      console.error("[dev/token] session create failed:", sessionRes.status, text);
+      return res.status(sessionRes.status).json({
+        error: "CLERK_SESSION_CREATE_FAILED",
+        message: text,
+      });
+    }
+
+    const session = await sessionRes.json();
+
+    // ── Mint token ─────────────────────────────────
+    const tokenRes = await fetch(
+      `https://api.clerk.com/v1/sessions/${session.id}/tokens?expires_in_seconds=${REQUESTED_TTL_SECONDS}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.clerk.secretKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (!tokenRes.ok) {
+      const text = await tokenRes.text();
+      console.error("[dev/token] token mint failed:", tokenRes.status, text);
+      return res.status(tokenRes.status).json({
+        error: "CLERK_TOKEN_MINT_FAILED",
+        message: text,
+      });
+    }
+
+    const tok = await tokenRes.json();
+
+    // ── Decode the actual JWT to find its real expiry ──────
+    // Clerk silently ignores `expires_in_seconds` on some instances
+    // (notably free tier), returning a 60s token instead. Trust the
+    // token itself, not our request.
+    let actualExp = null;
+    try {
+      const payloadB64 = tok.jwt.split(".")[1];
+      const payloadJson = Buffer.from(payloadB64, "base64url").toString("utf8");
+      const payload = JSON.parse(payloadJson);
+      actualExp = payload.exp;
+    } catch (err) {
+      console.error("[dev/token] failed to decode JWT:", err.message);
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const actualTtl = actualExp ? actualExp - now : 60;
+
+    console.log(
+      `[dev/token] minted for ${userId} — Clerk issued ${actualTtl}s TTL`
+    );
+
+    res.json({
+      token: tok.jwt,
+      sessionId: session.id,
+      expiresIn: actualTtl,
+      expiresAt: actualExp,
+    });
+  } catch (err) {
+    console.error("[dev/token] error:", err);
+    next(err);
+  }
+});
+
+
+
+========================================
+FILE: src\routes\health.js
+========================================
+
+import { Router } from "express";
+import mongoose from "mongoose";
+
+export const healthRouter = Router();
+
+healthRouter.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "idus-api",
+    version: "0.1.0",
+    mongo: mongoose.connection.readyState === 1 ? "up" : "down",
+    time: new Date().toISOString(),
+  });
+});
+
+
+
+========================================
+FILE: src\routes\invites.js
+========================================
+
+import express from "express";
+
+import { Challenge } from "../models/Challenge.js";
+import { Participant } from "../models/Participant.js";
+import { requireAuth } from "../middleware/auth.js";
+
+export const invitesRouter = express.Router();
+
+// ── GET /join/:inviteCode — public preview ──────────
+invitesRouter.get("/:inviteCode", async (req, res, next) => {
+  try {
+    const challenge = await Challenge.findOne({
+      inviteCode: req.params.inviteCode.toUpperCase(),
+    }).lean();
+
+    if (!challenge) {
+      return res.status(404).json({ error: "INVALID_INVITE" });
+    }
+    if (challenge.status !== "PUBLISHED") {
+      return res.status(409).json({ error: "NOT_PUBLISHED" });
+    }
+
+    const participantCount = await Participant.countDocuments({
+      challengeId: challenge._id,
+    });
+
+    res.json({
+      challenge: {
+        slug: challenge.slug,
+        title: challenge.title,
+        topic: challenge.topic,
+        difficulty: challenge.difficulty,
+        description: challenge.description,
+        startDate: challenge.startDate,
+        endDate: challenge.endDate,
+        availableDays: challenge.availableDays,
+        dailyMinutes: challenge.dailyMinutes,
+        skillMode: challenge.skillMode,
+      },
+      participantCount,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /join/:inviteCode — authenticated join ─────
+invitesRouter.post("/:inviteCode", requireAuth, async (req, res, next) => {
+  try {
+    const challenge = await Challenge.findOne({
+      inviteCode: req.params.inviteCode.toUpperCase(),
+    });
+
+    if (!challenge) {
+      return res.status(404).json({ error: "INVALID_INVITE" });
+    }
+    if (challenge.status !== "PUBLISHED") {
+      return res.status(409).json({ error: "NOT_PUBLISHED" });
+    }
+
+    const existing = await Participant.findOne({
+      challengeId: challenge._id,
+      userId: req.userId,
+    });
+    if (existing) {
+      return res.status(200).json({
+        ok: true,
+        alreadyJoined: true,
+        slug: challenge.slug,
+      });
+    }
+
+    await Participant.create({
+      challengeId: challenge._id,
+      userId: req.userId,
+      role:
+        String(challenge.creatorId) === String(req.userId)
+          ? "MODERATOR"
+          : "MEMBER",
+    });
+
+    res.status(201).json({ ok: true, slug: challenge.slug });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+========================================
+FILE: src\routes\me.js
+========================================
+
+// src/routes/me.js
+import express from "express";
+import { z } from "zod";
+
+import { User } from "../models/User.js";
+import { Challenge } from "../models/Challenge.js";
+import { Participant } from "../models/Participant.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { serializeUser } from "../utils/serializeUser.js";
+import { GENRES, ARCHETYPES, VIBES } from "../data/metaphors.js";
+import { getCharacterById } from "../services/anilist.js";
+import { fetchResourceMetadata } from "../services/cloudinary.js";
+
+export const meRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const patchMeSchema = z.object({
+  username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/).optional(),
+  fullName: z.string().max(80).optional(),
+  motto: z.string().max(200).optional(),
+  skills: z.array(z.string().max(40)).max(50).optional(),
+  settings: z.object({
+    notifications: z.object({
+      dailyReminder: z.boolean().optional(),
+      streakAtRisk: z.boolean().optional(),
+      phaseStart: z.boolean().optional(),
+    }).optional(),
+    theme: z.enum(["dark", "light", "system"]).optional(),
+    privacy: z.object({
+      discoverable: z.boolean().optional(),
+      showProgress: z.boolean().optional(),
+    }).optional(),
+  }).optional(),
+});
+
+const patchMetaphorSchema = z.object({
+  genre: z.enum(GENRES).optional(),
+  archetype: z.enum(ARCHETYPES).optional(),
+  vibe: z.enum(VIBES).optional(),
+  displayName: z.string().max(40).nullable().optional(),
+  tagline: z.string().max(120).nullable().optional(),
+});
+
+// ── GET /me ──────────────────────────────────────────
+meRouter.get("/", requireAuth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.userId).lean();
+    if (!user) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+    res.json({ user: serializeUser(user, { self: true }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PATCH /me ────────────────────────────────────────
+meRouter.patch(
+  "/",
+  requireAuth,
+  validate(patchMeSchema),
+  async (req, res, next) => {
+    try {
+      const user = await User.findById(req.userId);
+      if (!user) {
+        return res.status(404).json({ error: "USER_NOT_FOUND" });
+      }
+
+      const b = req.body;
+
+      if (b.username !== undefined) {
+        const taken = await User.findOne({
+          username: b.username,
+          _id: { $ne: user._id },
+        });
+        if (taken) {
+          return res.status(409).json({
+            error: "USERNAME_TAKEN",
+            message: "That username is already in use.",
+          });
+        }
+        user.username = b.username;
+      }
+
+      if (b.fullName !== undefined) user.fullName = b.fullName;
+      if (b.motto !== undefined) user.motto = b.motto;
+      if (b.skills !== undefined) user.skills = b.skills;
+
+      if (b.settings) {
+        user.settings = {
+          notifications: {
+            ...(user.settings?.notifications ?? {}),
+            ...(b.settings.notifications ?? {}),
+          },
+          theme: b.settings.theme ?? user.settings?.theme ?? "dark",
+          privacy: {
+            ...(user.settings?.privacy ?? {}),
+            ...(b.settings.privacy ?? {}),
+          },
+        };
+      }
+
+      await user.save();
+      res.json({ user: serializeUser(user.toObject(), { self: true }) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── PATCH /me/metaphor ───────────────────────────────
+meRouter.patch(
+  "/metaphor",
+  requireAuth,
+  validate(patchMetaphorSchema),
+  async (req, res, next) => {
+    try {
+      const user = await User.findById(req.userId);
+      if (!user) {
+        return res.status(404).json({ error: "USER_NOT_FOUND" });
+      }
+
+      const b = req.body;
+
+      // Ensure metaphor subdoc exists.
+      if (!user.metaphor) user.metaphor = {};
+      const m = user.metaphor;
+
+      if (b.genre !== undefined) m.genre = b.genre;
+      if (b.archetype !== undefined) m.archetype = b.archetype;
+      if (b.vibe !== undefined) m.vibe = b.vibe;
+      if (b.displayName !== undefined) m.displayName = b.displayName;
+      if (b.tagline !== undefined) m.tagline = b.tagline;
+
+      m.updatedAt = new Date();
+
+      user.markModified("metaphor");
+      await user.save();
+
+      res.json({ user: serializeUser(user.toObject(), { self: true }) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /me/challenges ───────────────────────────────
+// One-call convenience for the home screen.
+meRouter.get("/challenges", requireAuth, async (req, res, next) => {
+  try {
+    // Created
+    const created = await Challenge.find({ creatorId: req.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Joined
+    const participations = await Participant.find({ userId: req.userId })
+      .sort({ joinedAt: -1 })
+      .lean();
+
+    const joinedIds = participations.map((p) => p.challengeId);
+    const joinedChallenges = await Challenge.find({
+      _id: { $in: joinedIds },
+    }).lean();
+
+    const joinedMap = new Map(joinedChallenges.map((c) => [String(c._id), c]));
+
+    const joined = participations
+      .filter((p) => joinedMap.has(String(p.challengeId)))
+      .map((p) => {
+        const c = joinedMap.get(String(p.challengeId));
+        return {
+          challenge: serializeChallengeSummary(c),
+          participant: {
+            role: p.role,
+            joinedAt: p.joinedAt,
+            streak: p.streak,
+            stats: p.stats,
+          },
+        };
+      });
+
+    res.json({
+      created: created.map(serializeChallengeSummary),
+      joined,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+// ── POST /me/metaphor/art/anilist ────────────────────
+// Pin an AniList character as the user's metaphor art.
+meRouter.post(
+  "/metaphor/art/anilist",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { externalId } = req.body ?? {};
+      if (!externalId) {
+        return res.status(400).json({ error: "MISSING_EXTERNAL_ID" });
+      }
+
+      // Re-verify the character exists. Don't trust the client's URL.
+      const character = await getCharacterById(externalId);
+      if (!character || !character.image) {
+        return res.status(404).json({ error: "CHARACTER_NOT_FOUND" });
+      }
+
+      const user = await User.findById(req.userId);
+      if (!user) return res.status(404).json({ error: "USER_NOT_FOUND" });
+
+      if (!user.metaphor) user.metaphor = {};
+      user.metaphor.art = {
+        source: "anilist",
+        url: character.image,
+        thumbUrl: character.thumb,
+        attribution: "via AniList",
+        externalId: String(character.externalId),
+      };
+      user.metaphor.updatedAt = new Date();
+      user.markModified("metaphor");
+      await user.save();
+
+      res.json({ user: serializeUser(user.toObject(), { self: true }) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── POST /me/metaphor/art/upload ─────────────────────
+// Pin a custom-uploaded Cloudinary asset as the user's metaphor art.
+meRouter.post(
+  "/metaphor/art/upload",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { publicId } = req.body ?? {};
+      if (!publicId) {
+        return res.status(400).json({ error: "MISSING_PUBLIC_ID" });
+      }
+
+      // Ownership check: must be in this user's folder.
+      const expectedPrefix = `attachments/image/${req.userId}/`;
+      if (!publicId.startsWith(expectedPrefix)) {
+        return res.status(403).json({
+          error: "NOT_YOUR_RESOURCE",
+          message: `publicId must start with "${expectedPrefix}".`,
+        });
+      }
+
+      const meta = await fetchResourceMetadata(publicId, "image");
+      if (!meta || !meta.url) {
+        return res.status(404).json({ error: "RESOURCE_NOT_FOUND" });
+      }
+
+      const user = await User.findById(req.userId);
+      if (!user) return res.status(404).json({ error: "USER_NOT_FOUND" });
+
+      if (!user.metaphor) user.metaphor = {};
+      user.metaphor.art = {
+        source: "upload",
+        url: meta.url,
+        thumbUrl: meta.thumbUrl,
+        attribution: null,
+        externalId: publicId,
+      };
+      user.metaphor.updatedAt = new Date();
+      user.markModified("metaphor");
+      await user.save();
+
+      res.json({ user: serializeUser(user.toObject(), { self: true }) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── DELETE /me/metaphor/art ──────────────────────────
+meRouter.delete("/metaphor/art", requireAuth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ error: "USER_NOT_FOUND" });
+
+    if (user.metaphor) {
+      user.metaphor.art = null;
+      user.metaphor.updatedAt = new Date();
+      user.markModified("metaphor");
+      await user.save();
+    }
+
+    res.json({ user: serializeUser(user.toObject(), { self: true }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Local serializer for the home screen ─────────────
+// A lighter shape than the full challenge — the frontend home
+// doesn't need every phase and day, just the header info.
+function serializeChallengeSummary(c) {
+  return {
+    id: String(c._id),
+    slug: c.slug,
+    title: c.title,
+    topic: c.topic,
+    difficulty: c.difficulty,
+    status: c.status,
+    startDate: c.startDate,
+    endDate: c.endDate,
+    availableDays: c.availableDays,
+    dailyMinutes: c.dailyMinutes,
+    visibility: c.visibility,
+    creatorId: String(c.creatorId),
+    version: c.version,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+  };
+}
+
+
+
+========================================
+FILE: src\routes\messages.js
+========================================
+
+// src/routes/messages.js
+import express from "express";
+import { z } from "zod";
+import mongoose from "mongoose";
+
+import { Conversation } from "../models/Conversation.js";
+import { Message } from "../models/Message.js";
+import { SyncLog } from "../models/SyncLog.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { serializeUser } from "../utils/serializeUser.js";
+import { User } from "../models/User.js";
+import { emitToConversation } from "../services/socket.js";
+import { messageLimiter } from "../middleware/rateLimit.js";
+
+export const messagesRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const attachmentSchema = z.object({
+  kind: z.enum(["image", "file", "audio"]),
+  url: z.string().url(),
+  thumbUrl: z.string().url().nullable().optional(),
+  mimeType: z.string().min(3),
+  size: z.number().int().positive(),
+  width: z.number().int().positive().nullable().optional(),
+  height: z.number().int().positive().nullable().optional(),
+  duration: z.number().positive().nullable().optional(),
+  originalName: z.string().max(255).nullable().optional(),
+  cloudinaryPublicId: z.string().nullable().optional(),
+});
+
+const sendMessageSchema = z.object({
+  clientMessageId: z.string().min(8).max(64),
+  body: z.string().max(4000).default(""),
+  attachments: z.array(attachmentSchema).max(10).default([]),
+  replyToId: z.string().nullable().optional(),
+  localTimestamp: z.string().optional(),
+});
+
+const editMessageSchema = z.object({
+  body: z.string().min(1).max(4000),
+});
+
+// ── Helpers ──────────────────────────────────────────
+function serializeMessage(m, senderUser) {
+  return {
+    id: String(m._id),
+    conversationId: String(m.conversationId),
+    senderId: String(m.senderId),
+    clientMessageId: m.clientMessageId,
+    body: m.body,
+    attachments: m.attachments ?? [],
+    replyToId: m.replyToId ? String(m.replyToId) : null,
+    reactions: m.reactions ?? {},
+    editedAt: m.editedAt,
+    deletedAt: m.deletedAt,
+    localTimestamp: m.localTimestamp,
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
+    sender: senderUser ? serializeUser(senderUser) : null,
+  };
+}
+
+async function ensureParticipant(conversationId, userId) {
+  const convo = await Conversation.findById(conversationId);
+  if (!convo) return { convo: null, ok: false };
+  const ok = convo.participants.some(
+    (p) => String(p.userId) === String(userId) && !p.leftAt
+  );
+  return { convo, ok };
+}
+
+function previewFromBody(body, attachments) {
+  if (body && body.trim().length > 0) {
+    return body.length > 80 ? body.slice(0, 80) + "…" : body;
+  }
+  if (attachments.length > 0) {
+    const kinds = new Set(attachments.map((a) => a.kind));
+    if (kinds.has("image")) return "📷 Image";
+    if (kinds.has("audio")) return "🎵 Audio";
+    return "📎 File";
+  }
+  return "";
+}
+
+// ── POST /conversations/:id/messages ─────────────────
+// Send a message. Idempotent via (senderId, clientMessageId).
+messagesRouter.post(
+  "/:id/messages",
+  requireAuth,
+  messageLimiter,
+  validate(sendMessageSchema),
+  async (req, res, next) => {
+    try {
+      const { id: conversationId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+        return res.status(400).json({ error: "INVALID_ID" });
+      }
+
+      const { convo, ok } = await ensureParticipant(conversationId, req.userId);
+      if (!convo) {
+        return res.status(404).json({ error: "CONVERSATION_NOT_FOUND" });
+      }
+      if (!ok) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const {
+        clientMessageId,
+        body,
+        attachments,
+        replyToId,
+        localTimestamp,
+      } = req.body;
+
+      // Idempotency — same sender, same clientMessageId.
+      const existing = await Message.findOne({
+        senderId: req.userId,
+        clientMessageId,
+      });
+      if (existing) {
+        const senderUser = await User.findById(existing.senderId).lean();
+        return res.status(200).json({
+          message: serializeMessage(existing, senderUser),
+          duplicate: true,
+        });
+      }
+
+      // Validate replyToId if present.
+      let replyRef = null;
+      if (replyToId) {
+        if (!mongoose.Types.ObjectId.isValid(replyToId)) {
+          return res.status(400).json({ error: "INVALID_REPLY_TO" });
+        }
+        replyRef = await Message.exists({
+          _id: replyToId,
+          conversationId,
+        });
+        if (!replyRef) {
+          return res.status(400).json({ error: "REPLY_MESSAGE_NOT_FOUND" });
+        }
+      }
+
+      const now = new Date();
+      const localTs = localTimestamp ? new Date(localTimestamp) : now;
+
+      const msg = await Message.create({
+        conversationId,
+        senderId: req.userId,
+        clientMessageId,
+        body: body ?? "",
+        attachments: attachments ?? [],
+        replyToId: replyToId ?? null,
+        localTimestamp: localTs,
+      });
+
+      // Bump conversation denormalized fields.
+      convo.lastMessageAt = msg.createdAt;
+      convo.lastMessagePreview = previewFromBody(msg.body, msg.attachments);
+      convo.lastMessageSenderId = msg.senderId;
+      convo.messageCount = (convo.messageCount ?? 0) + 1;
+      await convo.save();
+
+      // SyncLog for idempotency audit + later sync-batch endpoint.
+      await SyncLog.updateOne(
+        { userId: req.userId, clientActionId: clientMessageId },
+        {
+          $setOnInsert: {
+            userId: req.userId,
+            challengeId: convo.challengeId ?? convo._id, // reuse field
+            clientActionId: clientMessageId,
+            actionType: "MESSAGE_SEND",
+            status: "ACCEPTED",
+          },
+        },
+        { upsert: true }
+      );
+
+      const senderUser = await User.findById(req.userId).lean();
+      const payload = serializeMessage(msg, senderUser);
+
+      // Real-time broadcast to conversation room.
+      emitToConversation(conversationId, "message:new", payload);
+
+      res.status(201).json({ message: payload });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /conversations/:id/messages ──────────────────
+// Cursor-paginated. `before` = messageId to fetch older-than.
+messagesRouter.get(
+  "/:id/messages",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { id: conversationId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+        return res.status(400).json({ error: "INVALID_ID" });
+      }
+
+      const { ok } = await ensureParticipant(conversationId, req.userId);
+      if (!ok) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 50, 100);
+      const before = req.query.before;
+
+      const query = {
+        conversationId,
+        deletedAt: null,
+      };
+
+      if (before) {
+        if (!mongoose.Types.ObjectId.isValid(before)) {
+          return res.status(400).json({ error: "INVALID_CURSOR" });
+        }
+        const cursor = await Message.findById(before, { createdAt: 1 }).lean();
+        if (cursor) {
+          query.createdAt = { $lt: cursor.createdAt };
+        }
+      }
+
+      const messages = await Message.find(query)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+
+      // Reverse so response is oldest-first within the page.
+      const ordered = messages.reverse();
+
+      // Batch-fetch senders.
+      const senderIds = Array.from(new Set(ordered.map((m) => String(m.senderId))));
+      const senders = await User.find({ _id: { $in: senderIds } }).lean();
+      const senderMap = new Map(senders.map((u) => [String(u._id), u]));
+
+      res.json({
+        messages: ordered.map((m) =>
+          serializeMessage(m, senderMap.get(String(m.senderId)))
+        ),
+        hasMore: messages.length === limit,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── PATCH /conversations/:id/messages/:messageId ─────
+messagesRouter.patch(
+  "/:id/messages/:messageId",
+  requireAuth,
+  validate(editMessageSchema),
+  async (req, res, next) => {
+    try {
+      const { id: conversationId, messageId } = req.params;
+      if (
+        !mongoose.Types.ObjectId.isValid(conversationId) ||
+        !mongoose.Types.ObjectId.isValid(messageId)
+      ) {
+        return res.status(400).json({ error: "INVALID_ID" });
+      }
+
+      const { ok } = await ensureParticipant(conversationId, req.userId);
+      if (!ok) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const msg = await Message.findOne({
+        _id: messageId,
+        conversationId,
+      });
+      if (!msg) {
+        return res.status(404).json({ error: "MESSAGE_NOT_FOUND" });
+      }
+      if (String(msg.senderId) !== String(req.userId)) {
+        return res.status(403).json({ error: "CANNOT_EDIT_OTHERS" });
+      }
+      if (msg.deletedAt) {
+        return res.status(409).json({ error: "MESSAGE_DELETED" });
+      }
+
+      msg.body = req.body.body;
+      msg.editedAt = new Date();
+      await msg.save();
+
+      const senderUser = await User.findById(msg.senderId).lean();
+      const payload = serializeMessage(msg, senderUser);
+
+      emitToConversation(conversationId, "message:edited", payload);
+
+      res.json({ message: payload });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── DELETE /conversations/:id/messages/:messageId ────
+messagesRouter.delete(
+  "/:id/messages/:messageId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const { id: conversationId, messageId } = req.params;
+      if (
+        !mongoose.Types.ObjectId.isValid(conversationId) ||
+        !mongoose.Types.ObjectId.isValid(messageId)
+      ) {
+        return res.status(400).json({ error: "INVALID_ID" });
+      }
+
+      const { ok } = await ensureParticipant(conversationId, req.userId);
+      if (!ok) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const msg = await Message.findOne({
+        _id: messageId,
+        conversationId,
+      });
+      if (!msg) {
+        return res.status(404).json({ error: "MESSAGE_NOT_FOUND" });
+      }
+      if (String(msg.senderId) !== String(req.userId)) {
+        return res.status(403).json({ error: "CANNOT_DELETE_OTHERS" });
+      }
+
+      msg.deletedAt = new Date();
+      msg.body = "";
+      msg.attachments = [];
+      await msg.save();
+
+      emitToConversation(conversationId, "message:deleted", {
+        conversationId,
+        messageId: String(msg._id),
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\routes\metaphors.js
+========================================
+
+// src/routes/metaphors.js
+import express from "express";
+
+import { requireAuth } from "../middleware/auth.js";
+import { searchLimiter } from "../middleware/rateLimit.js";
+import { searchCharacters, getCharacterById } from "../services/anilist.js";
+import { GENRES, ARCHETYPES, VIBES } from "../data/metaphors.js";
+
+export const metaphorsRouter = express.Router();
+
+// ── GET /metaphors/catalog ───────────────────────────
+// The closed enums from data/metaphors.js. Static.
+metaphorsRouter.get("/catalog", (req, res) => {
+  res.json({
+    genres: GENRES,
+    archetypes: ARCHETYPES,
+    vibes: VIBES,
+  });
+});
+
+// ── GET /metaphors/search?q=frieren ──────────────────
+metaphorsRouter.get(
+  "/search",
+  requireAuth,
+  searchLimiter,
+  async (req, res, next) => {
+    try {
+      const rawQ = (req.query.q ?? "").toString().trim();
+      if (rawQ.length < 2) {
+        return res.status(400).json({
+          error: "QUERY_TOO_SHORT",
+          message: "Search query must be at least 2 characters.",
+        });
+      }
+
+      const results = await searchCharacters(rawQ, {
+        page: Number(req.query.page) || 1,
+        perPage: Math.min(Number(req.query.perPage) || 20, 30),
+      });
+
+      res.json({ results, count: results.length });
+    } catch (err) {
+      if (err.code === "ANILIST_RATE_LIMITED") {
+        return res.status(429).json({
+          error: "UPSTREAM_RATE_LIMITED",
+          message: "AniList is rate limiting us. Try again shortly.",
+          retryAfter: err.retryAfter ?? 60,
+        });
+      }
+      next(err);
+    }
+  }
+);
+
+// ── GET /metaphors/character/:externalId ─────────────
+// Fetch one AniList character for re-verification.
+metaphorsRouter.get(
+  "/character/:externalId",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const c = await getCharacterById(req.params.externalId);
+      if (!c) {
+        return res.status(404).json({ error: "CHARACTER_NOT_FOUND" });
+      }
+      res.json({ character: c });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\routes\participants.js
+========================================
+
+// src/routes/participants.js
+import express from "express";
+import { z } from "zod";
+
+import { Challenge } from "../models/Challenge.js";
+import { Participant } from "../models/Participant.js";
+import { User } from "../models/User.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { serializeUser } from "../utils/serializeUser.js";
+
+export const participantsRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const roleSchema = z.object({
+  role: z.enum(["MEMBER", "MODERATOR"]),
+});
+
+// ── Helpers ──────────────────────────────────────────
+function serializeParticipant(p, user) {
+  return {
+    userId: String(p.userId),
+    role: p.role,
+    joinedAt: p.joinedAt,
+    streak: p.streak,
+    stats: p.stats,
+    user: serializeUser(user),
+  };
+}
+
+// ── GET /challenges/:slug/participants ───────────────
+participantsRouter.get(
+  "/:slug/participants",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({
+        slug: req.params.slug,
+      }).lean();
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+
+      const isCreator = String(challenge.creatorId) === String(req.userId);
+      const isParticipant = await Participant.exists({
+        challengeId: challenge._id,
+        userId: req.userId,
+      });
+
+      if (!isCreator && !isParticipant) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const participants = await Participant.find({
+        challengeId: challenge._id,
+      })
+        .sort({ "stats.completed": -1, joinedAt: 1 })
+        .lean();
+
+      // Batch-fetch users to avoid N+1.
+      const userIds = participants.map((p) => p.userId);
+      const users = await User.find({ _id: { $in: userIds } }).lean();
+      const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+      res.json({
+        participants: participants.map((p) =>
+          serializeParticipant(p, userMap.get(String(p.userId)))
+        ),
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── PATCH /challenges/:slug/participants/:userId ─────
+participantsRouter.patch(
+  "/:slug/participants/:userId",
+  requireAuth,
+  validate(roleSchema),
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+
+      if (String(challenge.creatorId) !== String(req.userId)) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const participant = await Participant.findOne({
+        challengeId: challenge._id,
+        userId: req.params.userId,
+      });
+      if (!participant) {
+        return res.status(404).json({ error: "PARTICIPANT_NOT_FOUND" });
+      }
+
+      participant.role = req.body.role;
+      await participant.save();
+
+      const user = await User.findById(participant.userId).lean();
+      res.json({ participant: serializeParticipant(participant, user) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\routes\presence.js
+========================================
+
+// src/routes/presence.js
+import express from "express";
+import { z } from "zod";
+
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { getPresenceBatch } from "../services/presence.js";
+
+export const presenceRouter = express.Router();
+
+const querySchema = z.object({
+  userIds: z.string().min(1).max(500),
+});
+
+// ── GET /presence?userIds=a,b,c ──────────────────────
+presenceRouter.get(
+  "/",
+  requireAuth,
+  (req, res, next) => {
+    try {
+      const { userIds } = req.query;
+      if (!userIds) {
+        return res.status(400).json({ error: "MISSING_USER_IDS" });
+      }
+
+      const ids = userIds
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 100); // cap
+
+      res.json({ presence: getPresenceBatch(ids) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+
+========================================
+FILE: src\routes\progress.js
+========================================
+
+// src/routes/progress.js
+import express from "express";
+import { z } from "zod";
+
+import { Challenge } from "../models/Challenge.js";
+import { Participant } from "../models/Participant.js";
+import { Progress } from "../models/Progress.js";
+import { SyncLog } from "../models/SyncLog.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { computeStreak } from "../utils/streak.js";
+
+export const progressRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const completeSchema = z.object({
+  clientActionId: z.string().min(8).max(64),
+  completedAt: z.string().optional(), // ISO; defaults to now
+  note: z.string().max(500).optional(),
+  artifactUrl: z.string().url().optional(),
+});
+
+// ── Helpers ──────────────────────────────────────────
+function serializeProgress(p) {
+  return {
+    id: String(p._id),
+    challengeId: String(p.challengeId),
+    userId: String(p.userId),
+    dayId: String(p.dayId),
+    dayNumber: p.dayNumber,
+    status: p.status,
+    completedAt: p.completedAt,
+    localTimestamp: p.localTimestamp,
+    late: p.late ?? false,
+    note: p.note ?? null,
+    artifactUrl: p.artifactUrl ?? null,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
+function findDay(challenge, dayId) {
+  for (const phase of challenge.phases ?? []) {
+    for (const day of phase.days ?? []) {
+      if (String(day._id) === String(dayId)) {
+        return { day, phase };
+      }
+    }
+  }
+  return null;
+}
+
+function isLate(day, completedAt, graceHours) {
+  const scheduled = new Date(day.scheduledDate).getTime();
+  const completed = new Date(completedAt).getTime();
+  const graceMs = graceHours * 60 * 60 * 1000;
+  return completed > scheduled + graceMs;
+}
+
+async function assertParticipant(challengeId, userId) {
+  return Participant.findOne({ challengeId, userId });
+}
+
+// ── POST /challenges/:slug/days/:dayId/complete ──────
+progressRouter.post(
+  "/:slug/days/:dayId/complete",
+  requireAuth,
+  validate(completeSchema),
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug });
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+
+      const participant = await assertParticipant(challenge._id, req.userId);
+      if (!participant) {
+        return res.status(403).json({ error: "NOT_A_PARTICIPANT" });
+      }
+
+      const found = findDay(challenge, req.params.dayId);
+      if (!found) {
+        return res.status(404).json({ error: "DAY_NOT_FOUND" });
+      }
+
+      // Idempotency check — same clientActionId means replay, return prior result.
+      const priorLog = await SyncLog.findOne({
+        userId: req.userId,
+        clientActionId: req.body.clientActionId,
+      }).lean();
+
+      if (priorLog) {
+        const existing = await Progress.findOne({
+          challengeId: challenge._id,
+          userId: req.userId,
+          dayId: found.day._id,
+        }).lean();
+
+        return res.status(200).json({
+          progress: existing ? serializeProgress(existing) : null,
+          replayed: true,
+          syncStatus: priorLog.status,
+        });
+      }
+
+      const completedAt = req.body.completedAt
+        ? new Date(req.body.completedAt)
+        : new Date();
+      const late = isLate(
+        found.day,
+        completedAt,
+        challenge.settings?.graceHours ?? 48
+      );
+
+      // Upsert Progress. If it already existed (re-completion), overwrite.
+      const progress = await Progress.findOneAndUpdate(
+        {
+          challengeId: challenge._id,
+          userId: req.userId,
+          dayId: found.day._id,
+        },
+        {
+          $set: {
+            dayNumber: found.day.dayNumber,
+            status: "COMPLETED",
+            completedAt,
+            localTimestamp: completedAt,
+            late,
+            note: req.body.note ?? null,
+            artifactUrl: req.body.artifactUrl ?? null,
+            syncedAt: new Date(),
+          },
+          $setOnInsert: {
+            challengeId: challenge._id,
+            userId: req.userId,
+            dayId: found.day._id,
+          },
+        },
+        { new: true, upsert: true }
+      );
+
+      // Recompute streak from all completed progress.
+      const completions = await Progress.find({
+        challengeId: challenge._id,
+        userId: req.userId,
+        status: "COMPLETED",
+      })
+        .select("completedAt")
+        .lean();
+
+      const nextStreak = computeStreak(completions, participant.streak);
+      participant.streak = nextStreak;
+
+      // Recompute stats.
+      const completedCount = completions.length;
+      participant.stats = {
+        completed: completedCount,
+        missed: Math.max(0, challenge.availableDays - completedCount),
+      };
+
+      participant.lastSyncedAt = new Date();
+      await participant.save();
+
+      // Record the action for idempotency.
+      await SyncLog.create({
+        userId: req.userId,
+        challengeId: challenge._id,
+        clientActionId: req.body.clientActionId,
+        actionType: "DAY_COMPLETE",
+        status: "ACCEPTED",
+      });
+
+      res.status(201).json({
+        progress: serializeProgress(progress),
+        streak: participant.streak,
+        stats: participant.stats,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /challenges/:slug/progress/me ────────────────
+progressRouter.get(
+  "/:slug/progress/me",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug }).lean();
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+
+      const participant = await assertParticipant(challenge._id, req.userId);
+      if (!participant) {
+        return res.status(403).json({ error: "NOT_A_PARTICIPANT" });
+      }
+
+      const rows = await Progress.find({
+        challengeId: challenge._id,
+        userId: req.userId,
+      })
+        .sort({ dayNumber: 1 })
+        .lean();
+
+      res.json({
+        progress: rows.map(serializeProgress),
+        streak: participant.streak,
+        stats: participant.stats,
+        totalDays: challenge.availableDays,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── GET /challenges/:slug/progress/summary ───────────
+progressRouter.get(
+  "/:slug/progress/summary",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const challenge = await Challenge.findOne({ slug: req.params.slug }).lean();
+      if (!challenge) {
+        return res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+      }
+
+      const isCreator = String(challenge.creatorId) === String(req.userId);
+      const isParticipant = await assertParticipant(challenge._id, req.userId);
+      if (!isCreator && !isParticipant) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      const totalParticipants = await Participant.countDocuments({
+        challengeId: challenge._id,
+      });
+
+      const grouped = await Progress.aggregate([
+        {
+          $match: {
+            challengeId: challenge._id,
+            status: "COMPLETED",
+          },
+        },
+        {
+          $group: {
+            _id: "$dayNumber",
+            completedCount: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]);
+
+      const byDay = new Map(grouped.map((g) => [g._id, g.completedCount]));
+
+      // Build a flat list of all days with aggregate completion counts.
+      const summary = [];
+      for (const phase of challenge.phases ?? []) {
+        for (const day of phase.days ?? []) {
+          summary.push({
+            dayNumber: day.dayNumber,
+            dayId: String(day._id),
+            title: day.title,
+            scheduledDate: day.scheduledDate,
+            completedCount: byDay.get(day.dayNumber) ?? 0,
+          });
+        }
+      }
+
+      res.json({
+        totalParticipants,
+        totalDays: challenge.availableDays,
+        summary,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\routes\sync.js
+========================================
+
+// src/routes/sync.js
+import express from "express";
+import { z } from "zod";
+
+import { SyncLog } from "../models/SyncLog.js";
+import { requireAuth } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { dispatchAction, SUPPORTED_ACTIONS } from "../services/actionHandlers.js";
+import { syncLimiter } from "../middleware/rateLimit.js";
+
+export const syncRouter = express.Router();
+
+// ── Schemas ──────────────────────────────────────────
+const actionSchema = z.object({
+  clientActionId: z.string().min(8).max(64),
+  type: z.string().min(3).max(40),
+  payload: z.record(z.any()).optional(),
+});
+
+const syncSchema = z.object({
+  actions: z.array(actionSchema).min(1).max(200),
+});
+
+// ── POST /sync ───────────────────────────────────────
+syncRouter.post("/", requireAuth, syncLimiter,validate(syncSchema), async (req, res, next) => {
+  try {
+    const { actions } = req.body;
+
+    const results = [];
+
+    for (const action of actions) {
+      const { clientActionId, type } = action;
+
+      // ── Idempotency check: have we seen this action before? ──
+      const priorLog = await SyncLog.findOne({
+        userId: req.userId,
+        clientActionId,
+      }).lean();
+
+      if (priorLog) {
+        results.push({
+          clientActionId,
+          type,
+          status: priorLog.status,
+          reason: priorLog.reason ?? null,
+          replay: true,
+          result: priorLog.result ?? null,
+        });
+        continue;
+      }
+
+      // ── Dispatch to handler ──
+      const outcome = await dispatchAction(req.userId, action);
+
+      // ── Persist outcome to SyncLog for replay protection ──
+      // SyncLog requires challengeId; for non-challenge actions we store the
+      // conversation or a placeholder. Keep the model's spirit: any ObjectId.
+      let challengeIdForLog = null;
+      if (type === "DAY_COMPLETE" && action.payload?.challengeSlug) {
+        // Look up the actual challengeId via the handler's result would be
+        // ideal, but simpler: reuse a placeholder ObjectId for non-challenge
+        // types and require the frontend to send challengeId when relevant.
+      }
+
+      // Extract challengeId from result if handler returned one; otherwise
+      // fall back to a syntactically valid placeholder so the schema's
+      // required field is satisfied.
+      const placeholderId = action.payload?.challengeId
+        ?? action.payload?.conversationId
+        ?? "000000000000000000000000";
+
+            await SyncLog.updateOne(
+        { userId: req.userId, clientActionId },
+        {
+          $setOnInsert: {
+            userId: req.userId,
+            challengeId: action.payload?.challengeId ?? null,
+            conversationId: action.payload?.conversationId ?? null,
+            clientActionId,
+            actionType: type,
+            status: outcome.status,
+            reason: outcome.reason ?? null,
+          },
+        },
+        { upsert: true }
+      );
+
+      results.push({
+        clientActionId,
+        type,
+        status: outcome.status,
+        reason: outcome.reason ?? null,
+        replay: false,
+        result: outcome.result ?? null,
+      });
+    }
+
+    res.json({ results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /sync/supported ──────────────────────────────
+// Introspection endpoint — handy for debugging and for the frontend to know
+// what action types are valid.
+syncRouter.get("/supported", (req, res) => {
+  res.json({ actions: SUPPORTED_ACTIONS });
+});
+
+
+
+========================================
+FILE: src\routes\users.js
+========================================
+
+// src/routes/users.js
+import express from "express";
+import mongoose from "mongoose";
+
+import { User } from "../models/User.js";
+import { requireAuth } from "../middleware/auth.js";
+import { serializeUser } from "../utils/serializeUser.js";
+import { searchLimiter } from "../middleware/rateLimit.js";
+
+export const usersRouter = express.Router();
+
+// ── GET /users/search?q=...&limit=20 ─────────────────
+usersRouter.get("/search", requireAuth, searchLimiter, async (req, res, next) => {
+  try {
+    const rawQ = (req.query.q ?? "").toString().trim();
+    const limit = Math.min(Number(req.query.limit) || 20, 50);
+
+    if (rawQ.length < 2) {
+      return res.status(400).json({
+        error: "QUERY_TOO_SHORT",
+        message: "Search query must be at least 2 characters.",
+      });
+    }
+
+    const escaped = rawQ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rx = new RegExp(escaped, "i");
+
+    const users = await User.find({
+      _id: { $ne: req.userId },
+      "settings.privacy.discoverable": { $ne: false },
+      $or: [{ username: rx }, { fullName: rx }, { permanentId: rx }],
+    })
+      .limit(limit)
+      .select("-settings -clerkId")
+      .lean();
+
+    res.json({
+      users: users.map((u) => serializeUser(u)),
+      count: users.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /users/:id ────────────────────────────────────
+usersRouter.get("/:id", requireAuth, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "INVALID_ID" });
+    }
+
+    // Load with settings for the privacy check.
+    const user = await User.findById(req.params.id).lean();
+    if (!user) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    const isSelf = String(user._id) === String(req.userId);
+    if (!isSelf && user.settings?.privacy?.discoverable === false) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    // Strip private fields before serializing.
+    delete user.settings;
+    delete user.clerkId;
+
+    res.json({ user: serializeUser(user) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+========================================
+FILE: src\routes\webhooks.js
+========================================
+
+import express from "express";
+import { verifyWebhook } from "@clerk/express/webhooks";
+import { User } from "../models/User.js";
+import { generatePermanentId } from "../utils/permanentId.js";
+
+export const webhooksRouter = express.Router();
+
+webhooksRouter.post(
+  "/clerk",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    console.log("[webhook] hit");
+    try {
+      const evt = await verifyWebhook(req);
+      console.log("[webhook] received", evt.type);
+
+      if (evt.type === "user.created") {
+        const { id, username, first_name, last_name } = evt.data;
+        await User.updateOne(
+          { clerkId: id },
+          {
+            $setOnInsert: {
+              clerkId: id,
+              permanentId: await generatePermanentId(),
+              username: username ?? null,
+              fullName: [first_name, last_name].filter(Boolean).join(" "),
+            },
+          },
+          { upsert: true }
+        );
+      }
+
+      if (evt.type === "user.updated") {
+        const { id, username, first_name, last_name } = evt.data;
+        await User.updateOne(
+          { clerkId: id },
+          {
+            $set: {
+              username: username ?? null,
+              fullName: [first_name, last_name].filter(Boolean).join(" "),
+            },
+          }
+        );
+      }
+
+      if (evt.type === "user.deleted") {
+        await User.deleteOne({ clerkId: evt.data.id });
+      }
+
+      res.status(200).json({ received: true });
+    } catch (err) {
+      console.error("[webhook] failed", err);
+      res.status(400).json({ error: "WEBHOOK_VERIFICATION_FAILED" });
+    }
+  }
+);
+
+
+
+========================================
+FILE: src\server.js
+========================================
+
+// src/server.js
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { createServer } from "node:http";
+
+import { config } from "./config.js";
+import { connectMongo } from "./db/mongo.js";
+import { healthRouter } from "./routes/health.js";
+import { webhooksRouter } from "./routes/webhooks.js";
+import { challengesRouter } from "./routes/challenges.js";
+import { participantsRouter } from "./routes/participants.js";
+import { invitesRouter } from "./routes/invites.js";
+import { idusClerk } from "./middleware/clerk.js";
+import { notFoundHandler, errorHandler } from "./middleware/errorHandler.js";
+import { progressRouter } from "./routes/progress.js";
+import { meRouter } from "./routes/me.js";
+import { initSocket } from "./services/socket.js";
+import { conversationsRouter } from "./routes/conversations.js";
+import { messagesRouter } from "./routes/messages.js";
+import { syncRouter } from "./routes/sync.js";
+import { attachmentsRouter } from "./routes/attachments.js";
+import { presenceRouter } from "./routes/presence.js";
+import { usersRouter } from "./routes/users.js";
+import { contactsRouter } from "./routes/contacts.js";
+import { metaphorsRouter } from "./routes/metaphors.js";
+
+async function main() {
+  await connectMongo();
+
+  const app = express();
+
+  app.use(helmet());
+
+  // In dev, allow localhost anywhere (Expo web preview, browser tools, etc.).
+  // In prod, restrict to the configured web URL.
+  const corsOrigin =
+    config.env === "production"
+      ? [config.webUrl]
+      : true; // reflect request origin in dev
+
+  app.use(cors({ origin: corsOrigin, credentials: true }));
+
+  // Webhooks FIRST — needs raw body, must not hit express.json()
+  app.use("/webhooks", webhooksRouter);
+
+  // Then JSON + Clerk
+  app.use(express.json({ limit: "2mb" }));
+  app.use(idusClerk);
+
+  app.use("/health", healthRouter);
+
+  // Dev-only token mint. Guarded by NODE_ENV in the router itself too.
+  if (config.env !== "production") {
+    const { devRouter } = await import("./routes/dev.js");
+    app.use("/dev", devRouter);
+    console.log("[api] dev routes mounted at /dev");
+  }
+
+  app.use("/challenges", challengesRouter);
+  app.use("/challenges", participantsRouter);
+  app.use("/challenges", progressRouter);
+  app.use("/join", invitesRouter);
+  app.use("/me", meRouter);
+  app.use("/sync", syncRouter);
+  app.use("/attachments", attachmentsRouter);
+  app.use("/presence", presenceRouter);
+  app.use("/users", usersRouter);
+  app.use("/contacts", contactsRouter);
+  app.use("/metaphors", metaphorsRouter);
+  app.use("/conversations", conversationsRouter);
+  app.use("/conversations", messagesRouter);
+
+
+
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+
+   const httpServer = createServer(app);
+
+  // Attach Socket.IO to the same HTTP server.
+  initSocket(httpServer);
+
+  httpServer.listen(config.port, () => {
+    console.log(`[api] http://localhost:${config.port}`);
+    console.log(`[api] socket.io attached`);
+  });
+}
+
+main().catch((err) => {
+  console.error("[api] fatal", err);
+  process.exit(1);
+});
+
+
+
+========================================
+FILE: src\services\actionHandlers.js
+========================================
+
+// src/services/actionHandlers.js
+import mongoose from "mongoose";
+
+import { Conversation } from "../models/Conversation.js";
+import { Message } from "../models/Message.js";
+import { Challenge } from "../models/Challenge.js";
+import { Participant } from "../models/Participant.js";
+import { Progress } from "../models/Progress.js";
+import { User } from "../models/User.js";
+import { SyncLog } from "../models/SyncLog.js";
+import { computeStreak } from "../utils/streak.js";
+import { emitToConversation } from "./socket.js";
+
+// ── Helpers shared with HTTP routes ─────────────────────
+
+function previewFromBody(body, attachments) {
+  if (body && body.trim().length > 0) {
+    return body.length > 80 ? body.slice(0, 80) + "…" : body;
+  }
+  if (attachments && attachments.length > 0) {
+    const kinds = new Set(attachments.map((a) => a.kind));
+    if (kinds.has("image")) return "📷 Image";
+    if (kinds.has("audio")) return "🎵 Audio";
+    return "📎 File";
+  }
+  return "";
+}
+
+function serializeMessage(m) {
+  return {
+    id: String(m._id),
+    conversationId: String(m.conversationId),
+    senderId: String(m.senderId),
+    clientMessageId: m.clientMessageId,
+    body: m.body,
+    attachments: m.attachments ?? [],
+    replyToId: m.replyToId ? String(m.replyToId) : null,
+    reactions: m.reactions ?? {},
+    editedAt: m.editedAt,
+    deletedAt: m.deletedAt,
+    localTimestamp: m.localTimestamp,
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
+  };
+}
+
+function isLate(day, completedAt, graceHours) {
+  const scheduled = new Date(day.scheduledDate).getTime();
+  const completed = new Date(completedAt).getTime();
+  const graceMs = graceHours * 60 * 60 * 1000;
+  return completed > scheduled + graceMs;
+}
+
+function findDay(challenge, dayId) {
+  for (const phase of challenge.phases ?? []) {
+    for (const day of phase.days ?? []) {
+      if (String(day._id) === String(dayId)) {
+        return { day, phase };
+      }
+    }
+  }
+  return null;
+}
+
+// ── MESSAGE_SEND ─────────────────────────────────────────
+
+async function handleMessageSend(userId, payload) {
+  const {
+    conversationId,
+    clientMessageId,
+    body,
+    attachments,
+    replyToId,
+    localTimestamp,
+  } = payload;
+
+  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+    return { status: "REJECTED", reason: "INVALID_CONVERSATION_ID" };
+  }
+
+  const convo = await Conversation.findById(conversationId);
+  if (!convo) {
+    return { status: "REJECTED", reason: "CONVERSATION_NOT_FOUND" };
+  }
+
+  const isParticipant = convo.participants.some(
+    (p) => String(p.userId) === String(userId) && !p.leftAt
+  );
+  if (!isParticipant) {
+    return { status: "REJECTED", reason: "NOT_A_PARTICIPANT" };
+  }
+
+  // Idempotency: same sender + clientMessageId
+  const existing = await Message.findOne({
+    senderId: userId,
+    clientMessageId,
+  });
+  if (existing) {
+    return {
+      status: "DUPLICATE",
+      result: { message: serializeMessage(existing) },
+    };
+  }
+
+  const now = new Date();
+  const localTs = localTimestamp ? new Date(localTimestamp) : now;
+
+  const msg = await Message.create({
+    conversationId,
+    senderId: userId,
+    clientMessageId,
+    body: body ?? "",
+    attachments: attachments ?? [],
+    replyToId: replyToId ?? null,
+    localTimestamp: localTs,
+  });
+
+  convo.lastMessageAt = msg.createdAt;
+  convo.lastMessagePreview = previewFromBody(msg.body, msg.attachments);
+  convo.lastMessageSenderId = msg.senderId;
+  convo.messageCount = (convo.messageCount ?? 0) + 1;
+  await convo.save();
+
+  const payloadOut = serializeMessage(msg);
+  emitToConversation(String(conversationId), "message:new", payloadOut);
+
+  return { status: "ACCEPTED", result: { message: payloadOut } };
+}
+
+// ── MESSAGE_EDIT ─────────────────────────────────────────
+
+async function handleMessageEdit(userId, payload) {
+  const { conversationId, messageId, body } = payload;
+
+  if (
+    !mongoose.Types.ObjectId.isValid(conversationId) ||
+    !mongoose.Types.ObjectId.isValid(messageId)
+  ) {
+    return { status: "REJECTED", reason: "INVALID_ID" };
+  }
+
+  const msg = await Message.findOne({ _id: messageId, conversationId });
+  if (!msg) return { status: "REJECTED", reason: "MESSAGE_NOT_FOUND" };
+  if (String(msg.senderId) !== String(userId)) {
+    return { status: "REJECTED", reason: "CANNOT_EDIT_OTHERS" };
+  }
+  if (msg.deletedAt) return { status: "REJECTED", reason: "MESSAGE_DELETED" };
+
+  msg.body = body;
+  msg.editedAt = new Date();
+  await msg.save();
+
+  const out = serializeMessage(msg);
+  emitToConversation(String(conversationId), "message:edited", out);
+  return { status: "ACCEPTED", result: { message: out } };
+}
+
+// ── MESSAGE_DELETE ───────────────────────────────────────
+
+async function handleMessageDelete(userId, payload) {
+  const { conversationId, messageId } = payload;
+
+  if (
+    !mongoose.Types.ObjectId.isValid(conversationId) ||
+    !mongoose.Types.ObjectId.isValid(messageId)
+  ) {
+    return { status: "REJECTED", reason: "INVALID_ID" };
+  }
+
+  const msg = await Message.findOne({ _id: messageId, conversationId });
+  if (!msg) return { status: "REJECTED", reason: "MESSAGE_NOT_FOUND" };
+  if (String(msg.senderId) !== String(userId)) {
+    return { status: "REJECTED", reason: "CANNOT_DELETE_OTHERS" };
+  }
+
+  msg.deletedAt = new Date();
+  msg.body = "";
+  msg.attachments = [];
+  await msg.save();
+
+  emitToConversation(String(conversationId), "message:deleted", {
+    conversationId: String(conversationId),
+    messageId: String(msg._id),
+  });
+
+  return { status: "ACCEPTED", result: { ok: true } };
+}
+
+// ── READ_RECEIPT ─────────────────────────────────────────
+
+async function handleReadReceipt(userId, payload) {
+  const { conversationId, messageId } = payload;
+
+  if (
+    !mongoose.Types.ObjectId.isValid(conversationId) ||
+    !mongoose.Types.ObjectId.isValid(messageId)
+  ) {
+    return { status: "REJECTED", reason: "INVALID_ID" };
+  }
+
+  const convo = await Conversation.findById(conversationId);
+  if (!convo) return { status: "REJECTED", reason: "CONVERSATION_NOT_FOUND" };
+
+  const p = convo.participants.find(
+    (x) => String(x.userId) === String(userId) && !x.leftAt
+  );
+  if (!p) return { status: "REJECTED", reason: "NOT_A_PARTICIPANT" };
+
+  p.lastReadMessageId = messageId;
+  p.lastReadAt = new Date();
+  await convo.save();
+
+  emitToConversation(String(conversationId), "receipt:read", {
+    conversationId: String(conversationId),
+    userId: String(userId),
+    lastReadMessageId: String(messageId),
+    lastReadAt: p.lastReadAt,
+  });
+
+  return {
+    status: "ACCEPTED",
+    result: {
+      lastReadMessageId: String(messageId),
+      lastReadAt: p.lastReadAt,
+    },
+  };
+}
+
+// ── DAY_COMPLETE ─────────────────────────────────────────
+
+async function handleDayComplete(userId, payload) {
+  const { challengeSlug, dayId, completedAt, note, artifactUrl } = payload;
+
+  const challenge = await Challenge.findOne({ slug: challengeSlug });
+  if (!challenge) return { status: "REJECTED", reason: "CHALLENGE_NOT_FOUND" };
+
+  const participant = await Participant.findOne({
+    challengeId: challenge._id,
+    userId,
+  });
+  if (!participant) return { status: "REJECTED", reason: "NOT_A_PARTICIPANT" };
+
+  const found = findDay(challenge, dayId);
+  if (!found) return { status: "REJECTED", reason: "DAY_NOT_FOUND" };
+
+  const ts = completedAt ? new Date(completedAt) : new Date();
+  const late = isLate(found.day, ts, challenge.settings?.graceHours ?? 48);
+
+  const progress = await Progress.findOneAndUpdate(
+    {
+      challengeId: challenge._id,
+      userId,
+      dayId: found.day._id,
+    },
+    {
+      $set: {
+        dayNumber: found.day.dayNumber,
+        status: "COMPLETED",
+        completedAt: ts,
+        localTimestamp: ts,
+        late,
+        note: note ?? null,
+        artifactUrl: artifactUrl ?? null,
+        syncedAt: new Date(),
+      },
+      $setOnInsert: {
+        challengeId: challenge._id,
+        userId,
+        dayId: found.day._id,
+      },
+    },
+    { new: true, upsert: true }
+  );
+
+  const completions = await Progress.find({
+    challengeId: challenge._id,
+    userId,
+    status: "COMPLETED",
+  })
+    .select("completedAt")
+    .lean();
+
+  const nextStreak = computeStreak(completions, participant.streak);
+  participant.streak = nextStreak;
+  participant.stats = {
+    completed: completions.length,
+    missed: Math.max(0, challenge.availableDays - completions.length),
+  };
+  participant.lastSyncedAt = new Date();
+  await participant.save();
+
+  return {
+    status: "ACCEPTED",
+    result: {
+      progress: {
+        id: String(progress._id),
+        dayId: String(progress.dayId),
+        dayNumber: progress.dayNumber,
+        status: progress.status,
+        completedAt: progress.completedAt,
+        late: progress.late,
+      },
+      streak: participant.streak,
+      stats: participant.stats,
+    },
+  };
+}
+
+// ── Dispatcher ───────────────────────────────────────────
+
+const HANDLERS = {
+  MESSAGE_SEND: handleMessageSend,
+  MESSAGE_EDIT: handleMessageEdit,
+  MESSAGE_DELETE: handleMessageDelete,
+  READ_RECEIPT: handleReadReceipt,
+  DAY_COMPLETE: handleDayComplete,
+};
+
+export const SUPPORTED_ACTIONS = Object.keys(HANDLERS);
+
+export async function dispatchAction(userId, action) {
+  const { type, payload } = action;
+
+  if (!type || typeof type !== "string") {
+    return { status: "REJECTED", reason: "MISSING_TYPE" };
+  }
+
+  const handler = HANDLERS[type];
+  if (!handler) {
+    return { status: "REJECTED", reason: `UNSUPPORTED_TYPE: ${type}` };
+  }
+
+  try {
+    return await handler(userId, payload ?? {});
+  } catch (err) {
+    console.error(`[sync] handler error for ${type}:`, err);
+    return { status: "REJECTED", reason: err.message ?? "HANDLER_ERROR" };
+  }
+}
+
+
+
+========================================
+FILE: src\services\anilist.js
+========================================
+
+// src/services/anilist.js
+import { config } from "../config.js";
+
+const ANILIST_ENDPOINT = "https://graphql.anilist.co";
+
+// Simple in-memory cache to keep us well under the 90 req/min limit.
+// key = search query (lowercased), value = { at, results }
+const searchCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_MAX_ENTRIES = 200;
+
+function cacheKey(q) {
+  return q.trim().toLowerCase();
+}
+
+function pruneCache() {
+  if (searchCache.size <= CACHE_MAX_ENTRIES) return;
+  const now = Date.now();
+  for (const [k, v] of searchCache.entries()) {
+    if (now - v.at > CACHE_TTL_MS) searchCache.delete(k);
+  }
+}
+
+const SEARCH_QUERY = `
+query ($search: String, $page: Int, $perPage: Int) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      currentPage
+      hasNextPage
+    }
+    characters(search: $search, sort: [FAVOURITES_DESC, SEARCH_MATCH]) {
+      id
+      name {
+        full
+        native
+        alternative
+      }
+      image {
+        large
+        medium
+      }
+      description(asHtml: false)
+      favourites
+      media(perPage: 3, sort: POPULARITY_DESC) {
+        nodes {
+          id
+          title {
+            romaji
+            english
+            native
+          }
+          genres
+          isAdult
+        }
+      }
+    }
+  }
+}
+`;
+
+/**
+ * Search AniList for characters matching a query.
+ * @param {string} query
+ * @param {{ page?: number, perPage?: number }} [opts]
+ * @returns {Promise<Array<object>>} sanitized character results
+ */
+export async function searchCharacters(query, { page = 1, perPage = 20 } = {}) {
+  const key = cacheKey(query);
+  const cached = searchCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.results;
+  }
+
+  const body = {
+    query: SEARCH_QUERY,
+    variables: { search: query, page, perPage },
+  };
+
+  const res = await fetch(ANILIST_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 429) {
+    const retry = res.headers.get("retry-after") ?? "60";
+    throw Object.assign(new Error("AniList rate limited"), {
+      code: "ANILIST_RATE_LIMITED",
+      status: 429,
+      retryAfter: Number(retry),
+    });
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw Object.assign(new Error(`AniList error ${res.status}`), {
+      code: "ANILIST_ERROR",
+      status: res.status,
+      body: text.slice(0, 200),
+    });
+  }
+
+  const json = await res.json();
+
+  if (json.errors?.length) {
+    const first = json.errors[0];
+    throw Object.assign(new Error(first.message ?? "AniList GraphQL error"), {
+      code: "ANILIST_GRAPHQL_ERROR",
+      status: 400,
+    });
+  }
+
+  const edges = json.data?.Page?.characters ?? [];
+
+  // Sanitize: strip HTML from description, normalize shape.
+  const results = edges.map((c) => {
+    const media = c.media?.nodes?.[0] ?? null;
+    return {
+      externalId: String(c.id),
+      name: c.name?.full ?? c.name?.native ?? "Unknown",
+      nameNative: c.name?.native ?? null,
+      aliases: c.name?.alternative ?? [],
+      image: c.image?.large ?? c.image?.medium ?? null,
+      thumb: c.image?.medium ?? null,
+      description: stripHtml(c.description ?? "").slice(0, 400),
+      favourites: c.favourites ?? 0,
+      sourceAnime: media
+        ? {
+            id: String(media.id),
+            title:
+              media.title?.english ??
+              media.title?.romaji ??
+              media.title?.native ??
+              null,
+            genres: media.genres ?? [],
+            isAdult: !!media.isAdult,
+          }
+        : null,
+      attribution: "via AniList",
+    };
+  });
+
+  searchCache.set(key, { at: Date.now(), results });
+  pruneCache();
+  return results;
+}
+
+/**
+ * Fetch a specific character by AniList ID.
+ * Used to re-verify a selection before persisting it.
+ */
+export async function getCharacterById(id) {
+  const query = `
+    query ($id: Int) {
+      Character(id: $id) {
+        id
+        name { full native }
+        image { large medium }
+        description(asHtml: false)
+        favourites
+      }
+    }
+  `;
+
+  const res = await fetch(ANILIST_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables: { id: Number(id) } }),
+  });
+
+  if (!res.ok) return null;
+  const json = await res.json();
+  const c = json.data?.Character;
+  if (!c) return null;
+
+  return {
+    externalId: String(c.id),
+    name: c.name?.full ?? c.name?.native ?? "Unknown",
+    image: c.image?.large ?? c.image?.medium ?? null,
+    thumb: c.image?.medium ?? null,
+    attribution: "via AniList",
+  };
+}
+
+function stripHtml(s) {
+  return s.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+}
+
+
+
+========================================
+FILE: src\services\challengeValidator.js
+========================================
+
+/**
+ * Validate Gemini's output against the challenge spec.
+ * Throws a descriptive error if invalid.
+ */
+export function validateProgression(progression, spec) {
+  const { availableDays, dailyMinutes } = spec;
+
+  // ── Shape checks ──────────────────────────────────
+  if (!progression || typeof progression !== "object") {
+    throw new Error("Progression is not an object");
+  }
+  if (!Array.isArray(progression.phases) || progression.phases.length === 0) {
+    throw new Error("Progression has no phases");
+  }
+
+  // ── Collect all days ──────────────────────────────
+  const allDays = [];
+  for (const phase of progression.phases) {
+    if (!phase.title || !Array.isArray(phase.days)) {
+      throw new Error(`Phase "${phase.title ?? "(untitled)"}" is malformed`);
+    }
+    for (const day of phase.days) {
+      allDays.push(day);
+    }
+  }
+
+  // ── Day count must match ──────────────────────────
+  if (allDays.length !== availableDays) {
+    throw new Error(
+      `Expected ${availableDays} days, got ${allDays.length}`
+    );
+  }
+
+  // ── Day numbers must be 1..N, unique ──────────────
+  const seen = new Set();
+  for (const day of allDays) {
+    if (typeof day.dayNumber !== "number") {
+      throw new Error(`Day "${day.title}" missing dayNumber`);
+    }
+    if (day.dayNumber < 1 || day.dayNumber > availableDays) {
+      throw new Error(`Day number ${day.dayNumber} out of range 1..${availableDays}`);
+    }
+    if (seen.has(day.dayNumber)) {
+      throw new Error(`Duplicate day number: ${day.dayNumber}`);
+    }
+    seen.add(day.dayNumber);
+  }
+  for (let i = 1; i <= availableDays; i++) {
+    if (!seen.has(i)) {
+      throw new Error(`Missing day number: ${i}`);
+    }
+  }
+
+  // ── Last day must be FINAL ────────────────────────
+  const lastDay = allDays.find((d) => d.dayNumber === availableDays);
+  if (lastDay?.type !== "FINAL") {
+    throw new Error(`Last day (${availableDays}) must have type "FINAL"`);
+  }
+
+  // ── Estimated minutes sanity ──────────────────────
+  const maxMinutes = dailyMinutes * 1.5;
+  for (const day of allDays) {
+    if (typeof day.estimatedMinutes !== "number" || day.estimatedMinutes <= 0) {
+      throw new Error(`Day ${day.dayNumber} has invalid estimatedMinutes`);
+    }
+    if (day.estimatedMinutes > maxMinutes) {
+      throw new Error(
+        `Day ${day.dayNumber} exceeds time budget: ${day.estimatedMinutes} > ${maxMinutes}`
+      );
+    }
+  }
+
+  // ── Requirements must be a non-empty array ────────
+  for (const day of allDays) {
+    if (!Array.isArray(day.requirements) || day.requirements.length === 0) {
+      throw new Error(`Day ${day.dayNumber} has no requirements`);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Sort days within each phase by dayNumber, and sort phases by their first day.
+ * Fixes out-of-order output from Gemini.
+ */
+export function normalizeProgression(progression) {
+  for (const phase of progression.phases) {
+    phase.days.sort((a, b) => a.dayNumber - b.dayNumber);
+  }
+  progression.phases.sort((a, b) => {
+    const aFirst = Math.min(...a.days.map((d) => d.dayNumber));
+    const bFirst = Math.min(...b.days.map((d) => d.dayNumber));
+    return aFirst - bFirst;
+  });
+  return progression;
+}
+
+
+
+========================================
+FILE: src\services\cloudinary.js
+========================================
+
+// src/services/cloudinary.js
+import { v2 as cloudinary } from "cloudinary";
+import { config } from "../config.js";
+
+// Configure once at import time.
+cloudinary.config({
+  cloud_name: config.cloudinary.cloudName,
+  api_key: config.cloudinary.apiKey,
+  api_secret: config.cloudinary.apiSecret,
+  secure: true,
+});
+
+// ── Validation rules ─────────────────────────────────
+
+const IMAGE_MIME_ALLOW = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
+const FILE_MIME_ALLOW = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/zip",
+  "application/x-zip-compressed",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+]);
+
+export const SIZE_LIMITS = {
+  image: 10 * 1024 * 1024, // 10 MB
+  file: 25 * 1024 * 1024,  // 25 MB
+};
+
+export function isMimeAllowed(kind, mimeType) {
+  if (kind === "image") return IMAGE_MIME_ALLOW.has(mimeType);
+  if (kind === "file") return FILE_MIME_ALLOW.has(mimeType);
+  return false;
+}
+
+export function resourceTypeFor(kind) {
+  if (kind === "image") return "image";
+  if (kind === "file") return "raw";
+  throw new Error(`Unsupported attachment kind: ${kind}`);
+}
+
+// ── Signed upload payload ────────────────────────────
+
+/**
+ * Build the params the client must send to Cloudinary alongside the file.
+ * The signature covers these params + api_secret, so nothing can be tampered
+ * with client-side.
+ *
+ * @param {object} opts
+ * @param {"image"|"file"} opts.kind
+ * @param {string} opts.userId
+ * @param {string} [opts.preset] — Cloudinary upload preset name
+ * @returns {{ uploadUrl: string, params: Record<string,string|number>, resourceType: string }}
+ */
+export function buildSignedUpload({ kind, userId, preset = "idus_signed" }) {
+  const resourceType = resourceTypeFor(kind);
+  const timestamp = Math.floor(Date.now() / 1000);
+
+  // Folder structure: one per user, one per resource type.
+  // "attachments/<resourceType>/<userId>" keeps things organized.
+  const folder = `attachments/${resourceType}/${userId}`;
+
+  const paramsToSign = {
+    folder,
+    timestamp,
+    upload_preset: preset,
+  };
+
+  const signature = cloudinary.utils.api_sign_request(
+    paramsToSign,
+    config.cloudinary.apiSecret
+  );
+
+  const uploadUrl = `https://api.cloudinary.com/v1_1/${config.cloudinary.cloudName}/${resourceType}/upload`;
+
+  return {
+    uploadUrl,
+    resourceType,
+    params: {
+      ...paramsToSign,
+      api_key: config.cloudinary.apiKey,
+      signature,
+    },
+  };
+}
+
+/**
+ * Verify a publicId exists in our Cloudinary account and fetch its metadata.
+ * Used by /attachments/confirm so the client can't fabricate URLs.
+ *
+ * @param {string} publicId
+ * @param {"image"|"file"} kind
+ * @returns {Promise<{ url, thumbUrl, size, mimeType, width, height, format } | null>}
+ */
+export async function fetchResourceMetadata(publicId, kind) {
+  const resourceType = resourceTypeFor(kind);
+
+  try {
+    const res = await cloudinary.api.resource(publicId, {
+      resource_type: resourceType,
+    });
+
+    const url = res.secure_url ?? res.url ?? null;
+
+    // For images, generate a thumbnail by inserting a transformation in the URL.
+    // For raw files, no thumbnail.
+    let thumbUrl = null;
+    if (kind === "image" && url) {
+      thumbUrl = cloudinary.url(res.public_id, {
+        secure: true,
+        resource_type: "image",
+        transformation: [
+          { width: 400, height: 400, crop: "limit" },
+          { quality: "auto", fetch_format: "auto" },
+        ],
+      });
+    }
+
+    return {
+      url,
+      thumbUrl,
+      size: res.bytes ?? null,
+      width: res.width ?? null,
+      height: res.height ?? null,
+      format: res.format ?? null,
+      mimeType: res.resource_type === "image"
+        ? `image/${res.format}`
+        : guessMimeFromFormat(res.format),
+    };
+  } catch (err) {
+    // cloudinary throws 404 for unknown public ids
+    console.warn("[cloudinary] resource not found:", publicId, err.message);
+    return null;
+  }
+}
+
+function guessMimeFromFormat(format) {
+  if (!format) return "application/octet-stream";
+  const map = {
+    pdf: "application/pdf",
+    zip: "application/zip",
+    txt: "text/plain",
+    csv: "text/csv",
+    md: "text/markdown",
+  };
+  return map[format.toLowerCase()] ?? "application/octet-stream";
+}
+
+
+
+========================================
+FILE: src\services\gemini.js
+========================================
+
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { config } from "../config.js";
+
+const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
+
+// ── Response schema Gemini must follow ──────────────
+const responseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    challenge: {
+      type: SchemaType.OBJECT,
+      properties: {
+        title: { type: SchemaType.STRING },
+        topic: { type: SchemaType.STRING },
+        difficulty: { type: SchemaType.STRING },
+        summary: { type: SchemaType.STRING },
+      },
+      required: ["title", "topic", "difficulty", "summary"],
+    },
+    phases: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          title: { type: SchemaType.STRING },
+          description: { type: SchemaType.STRING },
+          monthLabel: { type: SchemaType.STRING },
+          days: {
+            type: SchemaType.ARRAY,
+            items: {
+              type: SchemaType.OBJECT,
+              properties: {
+                dayNumber: { type: SchemaType.INTEGER },
+                title: { type: SchemaType.STRING },
+                type: {
+                  type: SchemaType.STRING,
+                  enum: ["PROJECT", "MILESTONE", "FINAL"],
+                },
+                description: { type: SchemaType.STRING },
+                objective: { type: SchemaType.STRING },
+                requirements: {
+                  type: SchemaType.ARRAY,
+                  items: { type: SchemaType.STRING },
+                },
+                estimatedMinutes: { type: SchemaType.INTEGER },
+              },
+              required: [
+                "dayNumber",
+                "title",
+                "type",
+                "description",
+                "objective",
+                "requirements",
+                "estimatedMinutes",
+              ],
+            },
+          },
+        },
+        required: ["title", "description", "days"],
+      },
+    },
+  },
+  required: ["challenge", "phases"],
+};
+
+// ── Prompt builder ──────────────────────────────────
+function buildPrompt(input) {
+  const {
+    topic,
+    description,
+    difficulty,
+    goal,
+    availableDays,
+    dailyMinutes,
+    startDate,
+    endDate,
+    creatorInstructions,
+  } = input;
+
+  return `You are a senior curriculum architect designing a PROJECT-BASED skill challenge.
+
+═══════════════════════════════════════════
+CHALLENGE SPECIFICATION
+═══════════════════════════════════════════
+Topic: ${topic}
+Description: ${description || "(none provided)"}
+Universal difficulty: ${difficulty}
+Goal: ${goal || "Become capable at this skill by building real things."}
+Duration: ${startDate} to ${endDate}
+Available challenge days: ${availableDays}
+Daily time budget: ${dailyMinutes} minutes
+${creatorInstructions ? `\nCreator instructions: ${creatorInstructions}` : ""}
+
+═══════════════════════════════════════════
+NON-NEGOTIABLE RULES
+═══════════════════════════════════════════
+1. Every day is a BUILD, EXPERIMENT, or MILESTONE. Never "read about X" or "watch a video about Y".
+2. Projects must build on previous ones. Day 5 should use skills from Day 2.
+3. Complexity must increase progressively across the challenge.
+4. Group days into 4–8 logical PHASES with clear themes.
+5. The LAST day (dayNumber = ${availableDays}) MUST have type "FINAL" and be a capstone combining all skills.
+6. Difficulty must match ${difficulty}. Beginner = genuinely challenging but accessible. Expert = sophisticated, deep.
+7. Respect daily time: estimatedMinutes should be ≤ ${dailyMinutes * 1.2} and average ${dailyMinutes}.
+8. Produce EXACTLY ${availableDays} day entries total across all phases.
+9. Day numbers must be sequential: 1, 2, 3, ... ${availableDays}. No gaps.
+10. Each phase should have a "monthLabel" like "Month 1 — Foundations" ONLY when the duration exceeds 60 days.
+11. requirements: 3–7 concrete, checkable items. Not vague ("improve skills") but specific ("handle null input without crashing").
+12. Avoid repetition. No two days should be essentially the same project.
+
+═══════════════════════════════════════════
+OUTPUT
+═══════════════════════════════════════════
+Return ONLY valid JSON matching the provided schema. No prose, no markdown, no explanation.`;
+}
+
+// ── Main generator ──────────────────────────────────
+export async function generateChallengeProgression(input) {
+  const model = genAI.getGenerativeModel({
+    model: config.gemini.model,
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema,
+      temperature: 0.7,
+    },
+  });
+
+  const prompt = buildPrompt(input);
+
+  console.log(`[gemini] generating ${input.availableDays} days for "${input.topic}"...`);
+  const start = Date.now();
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
+
+  console.log(`[gemini] response received in ${Date.now() - start}ms`);
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`Gemini returned non-JSON: ${text.slice(0, 200)}`);
+  }
+
+  return parsed;
+}
+
+
+
+========================================
+FILE: src\services\geminiGenerate.js
+========================================
+
+import { generateChallengeProgression } from "./gemini.js";
+import {
+  validateProgression,
+  normalizeProgression,
+} from "./challengeValidator.js";
+
+/**
+ * Generate a challenge progression with one retry on validation failure.
+ */
+export async function generateValidatedProgression(spec) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      console.log(`[gemini] attempt ${attempt}`);
+      const raw = await generateChallengeProgression(spec);
+      const normalized = normalizeProgression(raw);
+      validateProgression(normalized, spec);
+      console.log(`[gemini] attempt ${attempt} passed validation`);
+      return normalized;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[gemini] attempt ${attempt} failed:`, err.message);
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+  }
+
+  throw new Error(`Gemini generation failed after 2 attempts: ${lastError?.message}`);
+}
+
+
+
+========================================
+FILE: src\services\presence.js
+========================================
+
+// src/services/presence.js
+//
+// In-memory presence store. Single-process only.
+// When you scale to multiple API instances, swap this for Redis
+// (a SET per user with instance IDs + TTL heartbeats).
+
+const userSockets = new Map(); // userId -> Set<socketId>
+const lastSeen = new Map();    // userId -> Date
+
+const ONLINE_GRACE_MS = 3000;  // treat user as online if within this window
+
+export function addSocket(userId, socketId) {
+  const id = String(userId);
+  if (!userSockets.has(id)) userSockets.set(id, new Set());
+  userSockets.get(id).add(socketId);
+  lastSeen.set(id, new Date());
+}
+
+export function removeSocket(userId, socketId) {
+  const id = String(userId);
+  const set = userSockets.get(id);
+  if (!set) return false;
+
+  set.delete(socketId);
+  lastSeen.set(id, new Date());
+
+  if (set.size === 0) {
+    userSockets.delete(id);
+    return true; // user just went fully offline
+  }
+  return false; // user still has another socket
+}
+
+export function isOnline(userId) {
+  const id = String(userId);
+  const set = userSockets.get(id);
+  if (!set || set.size === 0) return false;
+  return true;
+}
+
+export function getPresence(userId) {
+  const id = String(userId);
+  return {
+    userId: id,
+    online: isOnline(id),
+    lastSeen: lastSeen.get(id) ?? null,
+  };
+}
+
+export function getPresenceBatch(userIds) {
+  return userIds.map((id) => getPresence(id));
+}
+
+export function getOnlineUserIds() {
+  return Array.from(userSockets.keys());
+}
+export function getSocketsForUser(userId) {
+  const set = userSockets.get(String(userId));
+  return set ? Array.from(set) : [];
+}
+
+
+
+========================================
+FILE: src\services\socket.js
+========================================
+
+// src/services/socket.js
+import { Server } from "socket.io";
+import { createClerkClient, verifyToken } from "@clerk/express";
+import { config } from "../config.js";
+import { User } from "../models/User.js";
+import { Conversation } from "../models/Conversation.js";
+import {
+  addSocket,
+  removeSocket,
+  isOnline,
+  getSocketsForUser,
+} from "./presence.js";
+
+const clerk = createClerkClient({
+  secretKey: config.clerk.secretKey,
+  publishableKey: config.clerk.publishableKey,
+});
+
+let io = null;
+
+function roomFor(conversationId) {
+  return `conversation:${conversationId}`;
+}
+
+export function initSocket(httpServer) {
+  io = new Server(httpServer, {
+    cors: {
+      origin: config.env === "production" ? [config.webUrl] : true,
+      credentials: true,
+    },
+    path: "/socket.io",
+  });
+
+  // ── Auth handshake ────────────────────────────────
+  io.use(async (socket, next) => {
+    try {
+      const token =
+        socket.handshake.auth?.token ??
+        socket.handshake.headers?.authorization?.replace(/^Bearer\s+/i, "");
+
+      if (!token) {
+        return next(new Error("UNAUTHENTICATED"));
+      }
+
+      const claims = await verifyToken(token, {
+        secretKey: config.clerk.secretKey,
+      });
+
+      const clerkId = claims?.sub;
+      if (!clerkId) {
+        return next(new Error("UNAUTHENTICATED"));
+      }
+
+      const user = await User.findOne({ clerkId });
+      if (!user) {
+        return next(new Error("USER_NOT_FOUND"));
+      }
+
+      socket.data.userId = String(user._id);
+      socket.data.clerkId = clerkId;
+
+      next();
+    } catch (err) {
+      console.error("[socket] auth error:", err.message);
+      next(new Error("UNAUTHENTICATED"));
+    }
+  });
+
+  // ── Connection ────────────────────────────────────
+  io.on("connection", (socket) => {
+    const userId = socket.data.userId;
+    console.log(`[socket] connected user=${userId} sid=${socket.id}`);
+
+    // ── Presence ─────────────────────────────────
+    addSocket(userId, socket.id);
+
+    socket.broadcast.emit("presence:update", {
+      userId,
+      online: true,
+      at: new Date(),
+    });
+
+    // ── Join conversation rooms ──────────────────
+    socket.on("join:conversations", async () => {
+      try {
+        const conversations = await Conversation.find(
+          { "participants.userId": userId, "participants.leftAt": null },
+          { _id: 1 }
+        ).lean();
+
+        for (const c of conversations) {
+          socket.join(roomFor(c._id));
+        }
+
+        socket.emit("joined:conversations", { count: conversations.length });
+      } catch (err) {
+        console.error("[socket] join:conversations error:", err);
+      }
+    });
+
+    socket.on("join:conversation", async ({ conversationId }) => {
+      if (!conversationId) return;
+      try {
+        const allowed = await Conversation.exists({
+          _id: conversationId,
+          participants: { $elemMatch: { userId, leftAt: null } },
+        });
+        if (!allowed) {
+          return socket.emit("error", { error: "NOT_A_PARTICIPANT" });
+        }
+        socket.join(roomFor(conversationId));
+
+        const convo = await Conversation.findById(conversationId).lean();
+        if (convo) {
+          const otherIds = convo.participants
+            .filter((p) => !p.leftAt && String(p.userId) !== String(userId))
+            .map((p) => String(p.userId));
+
+          const presenceList = otherIds.map((id) => ({
+            userId: id,
+            online: isOnline(id),
+          }));
+          socket.emit("presence:snapshot", { presence: presenceList });
+        }
+      } catch (err) {
+        console.error("[socket] join:conversation error:", err);
+      }
+    });
+
+    // ── Typing ───────────────────────────────────
+    socket.on("typing:start", ({ conversationId }) => {
+      if (!conversationId) return;
+      socket.to(roomFor(conversationId)).emit("typing:start", {
+        conversationId,
+        userId,
+        at: new Date(),
+      });
+    });
+
+    socket.on("typing:stop", ({ conversationId }) => {
+      if (!conversationId) return;
+      socket.to(roomFor(conversationId)).emit("typing:stop", {
+        conversationId,
+        userId,
+        at: new Date(),
+      });
+    });
+
+    // ── Disconnect ───────────────────────────────
+    socket.on("disconnect", (reason) => {
+      const wentOffline = removeSocket(userId, socket.id);
+      console.log(
+        `[socket] disconnected user=${userId} sid=${socket.id} reason=${reason}`
+      );
+
+      if (wentOffline) {
+        io.emit("presence:update", {
+          userId,
+          online: false,
+          at: new Date(),
+        });
+      }
+    });
+  });
+
+  return io;
+}
+
+// ── Broadcast helpers ─────────────────────────────────
+
+export function emitToConversation(conversationId, event, payload) {
+  if (!io) return;
+  io.to(roomFor(conversationId)).emit(event, payload);
+}
+
+/**
+ * Emit an event to every socket belonging to a specific user.
+ * Used for direct notifications (contact requests, etc.).
+ */
+export function emitToUser(userId, event, payload) {
+  if (!io) return;
+  const sids = getSocketsForUser(userId);
+  for (const sid of sids) {
+    io.to(sid).emit(event, payload);
+  }
+}
+
+export function isSocketReady() {
+  return !!io;
+}
+
+
+
+========================================
+FILE: src\utils\permanentId.js
+========================================
+
+import { User } from "../models/User.js";
+
+export async function generatePermanentId() {
+  const MAX_ATTEMPTS = 10;
+
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const id = String(Math.floor(100000 + Math.random() * 900000));
+
+    const exists = await User.exists({ permanentId: id });
+    if (!exists) return id;
+  }
+
+  throw new Error("Failed to generate a unique permanent ID after 10 attempts");
+}
+
+
+
+========================================
+FILE: src\utils\scheduleResolver.js
+========================================
+
+/**
+ * Resolve a schedule into an array of actual challenge dates.
+ * @param {Date} startDate
+ * @param {Date} endDate
+ * @param {{ type: "weekdays" | "custom" | "explicit", days?: number[], dates?: string[] }} schedule
+ * @returns {Date[]}
+ */
+export function resolveChallengeDays(startDate, endDate, schedule) {
+  const dates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  // Normalize to midnight UTC to avoid time-of-day issues
+  start.setUTCHours(0, 0, 0, 0);
+  end.setUTCHours(0, 0, 0, 0);
+
+  if (start > end) return dates;
+
+  if (schedule.type === "explicit") {
+    // User supplied exact dates
+    if (!Array.isArray(schedule.dates)) return dates;
+    for (const iso of schedule.dates) {
+      const d = new Date(iso);
+      if (!isNaN(d) && d >= start && d <= end) {
+        d.setUTCHours(0, 0, 0, 0);
+        dates.push(d);
+      }
+    }
+    // Sort ascending
+    dates.sort((a, b) => a - b);
+    return dates;
+  }
+
+  // weekdays or custom: use weekday filter
+  const allowedDays =
+    schedule.type === "weekdays"
+      ? [1, 2, 3, 4, 5] // Mon–Fri (JS: 0=Sun, 1=Mon, ...)
+      : Array.isArray(schedule.days)
+        ? schedule.days
+        : [];
+
+  if (allowedDays.length === 0) return dates;
+
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    if (allowedDays.includes(cursor.getUTCDay())) {
+      dates.push(new Date(cursor));
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return dates;
+}
+
+
+
+========================================
+FILE: src\utils\serializeUser.js
+========================================
+
+// src/utils/serializeUser.js
+import { DEFAULT_METAPHOR } from "../data/metaphors.js";
+
+/**
+ * Public-safe user shape. Use this everywhere a user is embedded in a response.
+ * Pass `{ self: true }` to include fields only the owner should see.
+ */
+export function serializeUser(user, { self = false } = {}) {
+  if (!user) return null;
+
+  const m = user.metaphor ?? {};
+
+  const base = {
+    id: String(user._id),
+    permanentId: user.permanentId,
+    username: user.username ?? null,
+    fullName: user.fullName ?? null,
+    metaphor: {
+      genre: m.genre ?? DEFAULT_METAPHOR.genre,
+      archetype: m.archetype ?? DEFAULT_METAPHOR.archetype,
+      vibe: m.vibe ?? DEFAULT_METAPHOR.vibe,
+      displayName: m.displayName ?? null,
+      tagline: m.tagline ?? null,
+      art: m.art
+        ? {
+            source: m.art.source,
+            url: m.art.url,
+            thumbUrl: m.art.thumbUrl ?? null,
+            attribution: m.art.attribution ?? null,
+          }
+        : null,
+      updatedAt: m.updatedAt ?? null,
+    },
+    motto: user.motto ?? null,
+    skills: user.skills ?? [],
+    createdAt: user.createdAt,
+  };
+
+  if (!self) return base;
+
+  return {
+    ...base,
+    settings: user.settings,
+    updatedAt: user.updatedAt,
+  };
+}
+
+
+
+========================================
+FILE: src\utils\slug.js
+========================================
+
+import { Challenge } from "../models/Challenge.js";
+
+const SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I,O,0,1
+
+function randomString(length, alphabet) {
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return out;
+}
+
+export async function generateSlug(title) {
+  const base = title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 40) || "challenge";
+
+  const MAX_ATTEMPTS = 10;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const candidate = i === 0 ? base : `${base}-${randomString(4, SLUG_ALPHABET)}`;
+    const exists = await Challenge.exists({ slug: candidate });
+    if (!exists) return candidate;
+  }
+  throw new Error("Failed to generate unique slug");
+}
+
+export async function generateInviteCode() {
+  const MAX_ATTEMPTS = 10;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const code = randomString(6, CODE_ALPHABET);
+    const exists = await Challenge.exists({ inviteCode: code });
+    if (!exists) return code;
+  }
+  throw new Error("Failed to generate unique invite code");
+}
+
+
+
+========================================
+FILE: src\utils\streak.js
+========================================
+
+export function computeStreak(completedProgress, existingStreak) {
+  const current = existingStreak?.current ?? 0;
+  const longest = existingStreak?.longest ?? 0;
+  const lastCompletedDate = existingStreak?.lastCompletedDate;
+
+  if (completedProgress.length === 0) {
+    return { current: 0, longest, lastCompletedDate };
+  }
+
+  const sorted = [...completedProgress].sort(
+    (a, b) => new Date(a.completedAt) - new Date(b.completedAt)
+  );
+
+  let streak = 1;
+  let maxStreak = 1;
+  let prev = sorted[0].completedAt;
+
+  for (let i = 1; i < sorted.length; i++) {
+    const curr = sorted[i].completedAt;
+    const days = daysBetween(prev, curr);
+
+    if (days === 1) streak += 1;
+    else if (days > 1) streak = 1;
+
+    maxStreak = Math.max(maxStreak, streak);
+    prev = curr;
+  }
+
+  const daysSinceLast = daysBetween(prev, new Date());
+  if (daysSinceLast > 1) streak = 0;
+
+  return {
+    current: streak,
+    longest: Math.max(longest, maxStreak),
+    lastCompletedDate: prev,
+  };
+}
+
+function daysBetween(a, b) {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const aMid = new Date(a).setUTCHours(0, 0, 0, 0);
+  const bMid = new Date(b).setUTCHours(0, 0, 0, 0);
+  return Math.round(Math.abs(bMid - aMid) / MS_PER_DAY);
+}
+
+
+
+========================================
+FILE: src\utils\timestamps.js
+========================================
+
+
+
+
+
+========================================
+END OF CODEBASE
+Total files merged: 49
+========================================
